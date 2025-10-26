@@ -44,14 +44,23 @@ jobs:
             echo "Google Drive link detected..."
             FILE_ID=$(echo "$URL" | grep -oP '(?<=/d/)[^/]+' | head -1)
             if [ -z "$FILE_ID" ]; then
-              echo "ERROR: Could not find File ID in Google Drive link."
+              echo "ERROR: Could not find File ID."
               exit 1
             fi
-            WGET_CMD="wget --content-disposition \"https://drive.google.com/uc?export=download&id=$FILE_ID\" --user-agent='Mozilla/5.0'"
+            
+            echo "Fetching download confirmation cookie..."
+            wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate "https://docs.google.com/uc?export=download&id=$FILE_ID" -O /dev/null
+            
+            echo "Starting authenticated download..."
+            WGET_LOG=$(wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$(grep -oP 'download_warning_\S+' /tmp/cookies.txt | cut -d$'\t' -f7)&id=$FILE_ID" \
+                         --content-disposition --user-agent='Mozilla/5.0' 2>&1)
+            
+            echo "$WGET_LOG"
 
           elif [[ "$URL" == *"sharepoint.com"* ]]; then
             echo "OneDrive/SharePoint link detected..."
-            WGET_CMD="wget --content-disposition \"$URL?download=1\" --user-agent='Mozilla/5.0'"
+            WGET_LOG=$(wget --content-disposition "$URL?download=1" --user-agent='Mozilla/5.0' 2>&1)
+            echo "$WGET_LOG"
           
           else
             echo "Direct download link detected..."
@@ -63,15 +72,10 @@ jobs:
             exit 0
           fi
 
-          # Đã xoá 'echo "Executing command: $WGET_CMD"'
-          WGET_LOG=$(eval $WGET_CMD 2>&1)
-          echo "$WGET_LOG"
-
           LOCAL_FILE=$(echo "$WGET_LOG" | grep -oP "Saving to: ‘\K[^’]+" | tail -1)
 
           if [ -z "$LOCAL_FILE" ]; then
             echo "ERROR: Could not download file or determine filename."
-            echo "Check the link (may be private, restricted, or too large)."
             exit 1
           fi
 
@@ -102,8 +106,6 @@ jobs:
           if [ -z "$FILE_LINK" ]; then
             FILE_LINK="Could not get link (check sharing settings)"
           fi
-          
-          # Đã xoá 'echo "Link: $FILE_LINK"'
           echo "file_link=$FILE_LINK" >> $GITHUB_OUTPUT
 
       - name: Send Telegram Notification
@@ -115,8 +117,33 @@ jobs:
           REMOTE_NAME: ${{ github.event.inputs.remote_name }}
           FILE_LINK: ${{ steps.get_link.outputs.file_link }}
         run: |
-          MESSAGE="✅ **Upload Complete**%0A%0A**File**: \`$FILE_NAME\`%0A**Destination**: \`${REMOTE_NAME}:Mirror\`%0A**Link**: \`$FILE_LINK\`"
-          curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$TELEGRAM_CHAT_ID&text=$MESSAGE&parse_mode=Markdown"
+          echo "Preparing Telegram message..."
+          
+          escape_html() {
+            echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+          }
+
+          FILE_NAME_HTML=$(escape_html "$FILE_NAME")
+          REMOTE_NAME_HTML=$(escape_html "$REMOTE_NAME")
+          FILE_LINK_HTML=$(escape_html "$FILE_LINK")
+
+          MESSAGE_TEXT="✅ <b>Upload Complete</b>
+          
+          <b>File</b>: <code>$FILE_NAME_HTML</code>
+          <b>Destination</b>: <code>${REMOTE_NAME_HTML}:Mirror</code>
+          <b>Link</b>: <code>$FILE_LINK_HTML</code>"
+
+          JSON_PAYLOAD=$(jq -n \
+                            --arg chat_id "$TELEGRAM_CHAT_ID" \
+                            --arg text "$MESSAGE_TEXT" \
+                            '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
+          
+          echo "Sending notification via POST..."
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+               -H "Content-Type: application/json" \
+               -d "$JSON_PAYLOAD"
+          
+          echo "Notification sent."
 
       - name: Clean up runner
         if: always()
