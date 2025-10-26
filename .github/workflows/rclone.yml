@@ -1,4 +1,4 @@
-name: Rclone Mirror (File)
+name: Rclone 
 
 on:
   workflow_dispatch:
@@ -33,49 +33,33 @@ jobs:
           echo $RCLONE_CONF_BASE64 | base64 -d > ~/.config/rclone/rclone.conf
           echo "Rclone configuration complete."
 
-      - name: Download File (Handle GDrive/OneDrive/Direct)
+     
+      - name: Install gdown
+        run: |
+          echo "Installing gdown..."
+          pip install gdown
+          echo "gdown installed."
+
+    
+      - name: Download File (using gdown)
         id: download
         run: |
           URL="${{ github.event.inputs.file_url }}"
-          LOCAL_FILE=""
-          WGET_CMD=""
-
-          if [[ "$URL" == *"drive.google.com"* ]]; then
-            echo "Google Drive link detected..."
-            FILE_ID=$(echo "$URL" | grep -oP '(?<=/d/)[^/]+' | head -1)
-            if [ -z "$FILE_ID" ]; then
-              echo "ERROR: Could not find File ID."
-              exit 1
-            fi
-            
-            echo "Fetching download confirmation cookie..."
-            wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate "https://docs.google.com/uc?export=download&id=$FILE_ID" -O /dev/null
-            
-            echo "Starting authenticated download..."
-            WGET_LOG=$(wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$(grep -oP 'download_warning_\S+' /tmp/cookies.txt | cut -d$'\t' -f7)&id=$FILE_ID" \
-                         --content-disposition --user-agent='Mozilla/5.0' 2>&1)
-            
-            echo "$WGET_LOG"
-
-          elif [[ "$URL" == *"sharepoint.com"* ]]; then
-            echo "OneDrive/SharePoint link detected..."
-            WGET_LOG=$(wget --content-disposition "$URL?download=1" --user-agent='Mozilla/5.0' 2>&1)
-            echo "$WGET_LOG"
           
-          else
-            echo "Direct download link detected..."
-            LOCAL_FILE=$(basename "$URL")
-            LOCAL_FILE="${LOCAL_FILE%%\?*}"
-            echo "Downloading file as: $LOCAL_FILE"
-            wget -q -O "$LOCAL_FILE" "$URL"
-            echo "local_file=$LOCAL_FILE" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          LOCAL_FILE=$(echo "$WGET_LOG" | grep -oP "Saving to: ‘\K[^’]+" | tail -1)
-
+          echo "Downloading file with gdown (handles GDrive/OneDrive)..."
+          
+          # Chạy gdown, bắt lại log (cả stdout và stderr)
+          GDOWN_LOG=$(gdown --fuzzy "$URL" 2>&1)
+          
+          echo "$GDOWN_LOG"
+          
+          # Tìm tên file từ log của gdown
+          # Nó sẽ tìm "Saved to:" (cho GDrive) hoặc "Downloading to:" (cho link thường)
+          LOCAL_FILE=$(echo "$GDOWN_LOG" | grep -oP "(?<=Saved to: |Downloading to: )[']?\K[^']+")
+          
           if [ -z "$LOCAL_FILE" ]; then
-            echo "ERROR: Could not download file or determine filename."
+            echo "ERROR: Could not download file or determine filename from gdown output."
+            echo "Check link or gdown log. The file might be private."
             exit 1
           fi
 
