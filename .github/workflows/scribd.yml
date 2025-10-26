@@ -1,0 +1,77 @@
+name: "Scribd Downloader"
+
+on:
+  workflow_dispatch:
+    inputs:
+      book_url:
+        description: 'Scribd, Slideshare, or Everand URL'
+        required: true
+env:
+  TZ: Asia/Ho_Chi_Minh
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout downloader repository
+      uses: actions/checkout@v4
+      with:
+        repository: 'proplayer1131/scribd-downloader'
+        token: ${{ secrets.ACTION_TOKEN }}
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Normalize and Mask URL
+      id: normalize
+      run: |
+        URL="${{ github.event.inputs.book_url }}"
+        NORMALIZED_URL=$(echo "$URL" | sed -e 's/^http:/https:/' \
+                                           -e 's,://[^.]\+\.scribd\.com,://www.scribd.com,' \
+                                           -e 's,://[^.]\+\.slideshare\.net,://www.slideshare.net,' \
+                                           -e 's,://[^.]\+\.everand\.com,://www.everand.com,')
+        echo "::add-mask::$NORMALIZED_URL"
+        echo "url=$NORMALIZED_URL" >> $GITHUB_OUTPUT
+
+    - name: Run downloader
+      id: downloader
+      run: npm start "${{ steps.normalize.outputs.url }}"
+
+    - name: Install and configure rclone
+      env:
+        RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+      run: |
+        sudo apt-get update && sudo apt-get install -y rclone
+        mkdir -p ~/.config/rclone
+        echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+    - name: Sanitize, Upload, and Get Folder Link
+      id: onedrive
+      run: |
+        ORIGINAL_FILENAME=$(ls output/* | head -n 1)
+        SANITIZED_BASENAME=$(basename "$ORIGINAL_FILENAME" | sed 's#[*:<>?\/\\|]#_#g')
+        if [ "$(basename "$ORIGINAL_FILENAME")" != "$SANITIZED_BASENAME" ]; then
+          mv "$ORIGINAL_FILENAME" "output/$SANITIZED_BASENAME"
+        fi
+        rclone copy "output/$SANITIZED_BASENAME" "1drive:Scribd_download" --progress
+        PUBLIC_LINK=$(rclone link "1drive:Scribd_download/$SANITIZED_BASENAME")
+        echo "::add-mask::$PUBLIC_LINK"
+        echo "public_link=$PUBLIC_LINK" >> $GITHUB_OUTPUT
+
+    - name: Create Result Message
+      if: success()
+      run: |
+        echo "✅ Tải Sách Hoàn Tất" > telegram_message.txt
+        echo "🔗 Link: [Nhấn vào đây](${{ steps.onedrive.outputs.public_link }})" >> telegram_message.txt
+
+    - name: Upload Result Message
+      if: success() && hashFiles('telegram_message.txt') != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: result-message-${{ github.run_id }}
+        path: telegram_message.txt
+        retention-days: 1
