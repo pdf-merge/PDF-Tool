@@ -1,0 +1,114 @@
+name: Merge PDFs from OneDrive (Specific Folder)
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder_prefix:
+        description: 'Enter the folder prefix (e.g., 107)'
+        required: true
+        type: string
+
+jobs:
+  merge-pdfs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone pdftk-java
+
+      - name: 2. Configure Rclone from Secret
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "Rclone configuration successful."
+
+      - name: 3. Find and Download PDFs from Subfolder
+        env:
+          FOLDER_PREFIX: ${{ inputs.folder_prefix }}
+        run: |
+          mkdir -p downloads
+          
+          echo "Searching for directory with prefix: $FOLDER_PREFIX"
+          
+          TARGET_DIR_NAME=$(rclone lsf "1drive:LSC_Books" --dirs-only | grep "^${FOLDER_PREFIX}_" | head -n 1 | sed 's/\/$//')
+
+          if [ -z "$TARGET_DIR_NAME" ]; then
+            echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in 1drive:LSC_Books."
+            exit 1
+          fi
+
+          echo "Found target directory: $TARGET_DIR_NAME"
+          
+          RCLONE_REMOTE_PATH="1drive:LSC_Books/$TARGET_DIR_NAME"
+          
+          echo "Starting download from $RCLONE_REMOTE_PATH..."
+          rclone copy "$RCLONE_REMOTE_PATH" ./downloads/ --include "*.pdf"
+          
+          if [ -z "$(ls -A downloads/*.pdf 2>/dev/null)" ]; then
+            echo "::error::No PDF files found in $TARGET_DIR_NAME."
+            exit 1
+          fi
+          echo "Download complete."
+          
+          CLEAN_DIR_NAME=$(echo "$TARGET_DIR_NAME" | tr ' ' '_')
+          FINAL_FILE_NAME="${CLEAN_DIR_NAME}_TongHop.pdf"
+          
+          echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
+          echo "Output filename will be: $FINAL_FILE_NAME"
+
+      - name: 4. Merge PDFs and Generate Outline
+        run: |
+          cd downloads
+          
+          BOOKMARK_FILE="bookmarks.txt"
+          MERGED_TEMP_FILE="merged_temp.pdf"
+          FINAL_FILE="${{ env.FINAL_FILE_NAME }}"
+          
+          rm -f "$BOOKMARK_FILE" "$MERGED_TEMP_FILE" "$FINAL_FILE"
+
+          echo "Generating bookmark file..."
+          PAGE_COUNT=1
+
+          for f in $(ls -v *.pdf); do
+              if [ "$f" == "$MERGED_TEMP_FILE" ] || [ "$f" == "$FINAL_FILE" ]; then
+                  continue
+              fi
+              
+              TITLE_TEMP=$(echo "$f" | sed 's/\.pdf$//')
+              TITLE=$(echo "$TITLE_TEMP" | sed 's/^[0-9]*_//')
+              
+              echo "BookmarkBegin" >> "$BOOKMARK_FILE"
+              echo "BookmarkTitle: $TITLE" >> "$BOOKMARK_FILE"
+              echo "BookmarkLevel: 1" >> "$BOOKMARK_FILE"
+              echo "BookmarkPageNumber: $PAGE_COUNT" >> "$BOOKMARK_FILE"
+              
+              CURRENT_PAGES=$(pdftk "$f" dump_data | grep NumberOfPages | awk '{print $2}')
+              PAGE_COUNT=$((PAGE_COUNT + CURRENT_PAGES))
+              
+              echo "  + File: $f, Title: $TITLE, Next start page: $PAGE_COUNT"
+          done
+
+          echo "Bookmark file ($BOOKMARK_FILE) created successfully."
+          
+          echo "Merging PDF files..."
+          pdftk $(ls -v *.pdf) cat output "$MERGED_TEMP_FILE"
+          
+          echo "Applying outlines (bookmarks)..."
+          pdftk "$MERGED_TEMP_FILE" update_info "$BOOKMARK_FILE" output "$FINAL_FILE"
+          
+          rm "$MERGED_TEMP_FILE" "$BOOKMARK_FILE"
+          
+          echo "Process complete! Final file: $FINAL_FILE"
+
+      - name: 5. Upload Merged PDF to OneDrive (LSC_Merged)
+        run: |
+          RCLONE_DEST_PATH="1drive:LSC_Merged"
+          
+          FINAL_FILE_PATH="downloads/${{ env.FINAL_FILE_NAME }}"
+          
+          echo "Uploading $FINAL_FILE_PATH to $RCLONE_DEST_PATH..."
+          rclone copy "$FINAL_FILE_PATH" "$RCLONE_DEST_PATH"
+          
+          echo "Upload complete."
