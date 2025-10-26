@@ -1,0 +1,99 @@
+name: "Intelligent Crawler"
+
+on:
+  workflow_dispatch:
+    inputs:
+      FROM_ID:
+        description: "ID sách bắt đầu"
+        required: true
+        default: "1"
+      TO_ID:
+        description: "ID sách kết thúc"
+        required: true
+        default: "10"
+      THREADS:
+        description: "Số luồng tải ảnh đồng thời (max threads)"
+        required: true
+        default: "512"
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  crawl:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 720
+    env:
+      FROM_ID: ${{ github.event.inputs.FROM_ID }}
+      TO_ID: ${{ github.event.inputs.TO_ID }}
+      THREADS: ${{ github.event.inputs.THREADS }}
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/sachyhocpdf_downloader-main'
+          token: ${{ secrets.ACTION_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: Select Account from Pool 2
+        id: select_account
+        env:
+          ACCOUNTS_SECRET: ${{ secrets.BHLNK_ACCOUNTS2 }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          ACCOUNTS_LIST=$(echo "${ACCOUNTS_SECRET}" | sed '/^\s*$/d')
+          TOTAL_ACCOUNTS=$(echo "${ACCOUNTS_LIST}" | wc -l)
+          ACCOUNT_INDEX=$(( (RUN_NUMBER - 1) % TOTAL_ACCOUNTS ))
+          LINE_NUM=$((ACCOUNT_INDEX + 1))
+          ACCOUNT_LINE=$(echo "${ACCOUNTS_LIST}" | awk "NR==${LINE_NUM}")
+          BHLNK_EMAIL_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f1)
+          BHLNK_PASSWORD_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)
+          # Thêm mask để che thông tin nhạy cảm
+          echo "::add-mask::$BHLNK_EMAIL_VALUE"
+          echo "::add-mask::$BHLNK_PASSWORD_VALUE"
+          echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
+          echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3-tk jq
+          python -m pip install -U pip
+          pip install requests Pillow
+          if [ -f requirements.txt ]; then
+            grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
+            pip install -r requirements_linux.txt
+          fi
+
+      - name: Install and configure rclone
+        env:
+          RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
+
+      - name: Run Intelligent Crawl Script
+        run: python -u scripts/crawl_range.py | tee crawl.log
+
+      - name: Upload Crawl Log as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-log-${{ github.run_id }}
+          path: crawl.log
+          retention-days: 1
