@@ -1,0 +1,126 @@
+name: Rclone Mirror (File)
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'File URL (GDrive, OneDrive, or Direct Link)'
+        required: true
+      
+      remote_name:
+        description: 'Select remote (gdrive or 1drive)'
+        required: true
+        type: choice
+        options:
+          - gdrive
+          - 1drive
+        default: 'gdrive'
+
+jobs:
+  mirror-file:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone
+        env:
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+        run: |
+          echo "Configuring rclone..."
+          mkdir -p ~/.config/rclone
+          echo $RCLONE_CONF_BASE64 | base64 -d > ~/.config/rclone/rclone.conf
+          echo "Rclone configuration complete."
+
+      - name: Download File (Handle GDrive/OneDrive/Direct)
+        id: download
+        run: |
+          URL="${{ github.event.inputs.file_url }}"
+          LOCAL_FILE=""
+          WGET_CMD=""
+
+          if [[ "$URL" == *"drive.google.com"* ]]; then
+            echo "Google Drive link detected..."
+            FILE_ID=$(echo "$URL" | grep -oP '(?<=/d/)[^/]+' | head -1)
+            if [ -z "$FILE_ID" ]; then
+              echo "ERROR: Could not find File ID in Google Drive link."
+              exit 1
+            fi
+            WGET_CMD="wget --content-disposition \"https://drive.google.com/uc?export=download&id=$FILE_ID\" --user-agent='Mozilla/5.0'"
+
+          elif [[ "$URL" == *"sharepoint.com"* ]]; then
+            echo "OneDrive/SharePoint link detected..."
+            WGET_CMD="wget --content-disposition \"$URL?download=1\" --user-agent='Mozilla/5.0'"
+          
+          else
+            echo "Direct download link detected..."
+            LOCAL_FILE=$(basename "$URL")
+            LOCAL_FILE="${LOCAL_FILE%%\?*}"
+            echo "Downloading file as: $LOCAL_FILE"
+            wget -q -O "$LOCAL_FILE" "$URL"
+            echo "local_file=$LOCAL_FILE" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Đã xoá 'echo "Executing command: $WGET_CMD"'
+          WGET_LOG=$(eval $WGET_CMD 2>&1)
+          echo "$WGET_LOG"
+
+          LOCAL_FILE=$(echo "$WGET_LOG" | grep -oP "Saving to: ‘\K[^’]+" | tail -1)
+
+          if [ -z "$LOCAL_FILE" ]; then
+            echo "ERROR: Could not download file or determine filename."
+            echo "Check the link (may be private, restricted, or too large)."
+            exit 1
+          fi
+
+          echo "File downloaded successfully as: $LOCAL_FILE"
+          echo "local_file=$LOCAL_FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload File (to Mirror directory)
+        id: upload
+        run: |
+          LOCAL_FILE="${{ steps.download.outputs.local_file }}"
+          REMOTE_NAME="${{ github.event.inputs.remote_name }}"
+          REMOTE_PATH="${REMOTE_NAME}:Mirror"
+
+          echo "Uploading '$LOCAL_FILE' to '$REMOTE_PATH'"
+          rclone copy "$LOCAL_FILE" "$REMOTE_PATH" -P --config ~/.config/rclone/rclone.conf
+          echo "remote_path=$REMOTE_PATH" >> $GITHUB_OUTPUT
+          echo "Upload complete."
+
+      - name: Get Share Link
+        id: get_link
+        run: |
+          LOCAL_FILE="${{ steps.download.outputs.local_file }}"
+          REMOTE_PATH="${{ steps.upload.outputs.remote_path }}"
+          echo "Getting link for: ${REMOTE_PATH}/${LOCAL_FILE}"
+          
+          FILE_LINK=$(rclone link "${REMOTE_PATH}/${LOCAL_FILE}" --config ~/.config/rclone/rclone.conf)
+          
+          if [ -z "$FILE_LINK" ]; then
+            FILE_LINK="Could not get link (check sharing settings)"
+          fi
+          
+          # Đã xoá 'echo "Link: $FILE_LINK"'
+          echo "file_link=$FILE_LINK" >> $GITHUB_OUTPUT
+
+      - name: Send Telegram Notification
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FILE_NAME: ${{ steps.download.outputs.local_file }}
+          REMOTE_NAME: ${{ github.event.inputs.remote_name }}
+          FILE_LINK: ${{ steps.get_link.outputs.file_link }}
+        run: |
+          MESSAGE="✅ **Upload Complete**%0A%0A**File**: \`$FILE_NAME\`%0A**Destination**: \`${REMOTE_NAME}:Mirror\`%0A**Link**: \`$FILE_LINK\`"
+          curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$TELEGRAM_CHAT_ID&text=$MESSAGE&parse_mode=Markdown"
+
+      - name: Clean up runner
+        if: always()
+        run: |
+          echo "Cleaning up temporary files..."
+          rm -f "${{ steps.download.outputs.local_file }}"
+          echo "Cleanup complete."
