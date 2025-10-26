@@ -1,4 +1,4 @@
-  name: Rclone
+name: Rclone Mirror (File)
 
 on:
   workflow_dispatch:
