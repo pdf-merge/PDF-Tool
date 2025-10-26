@@ -1,0 +1,96 @@
+name: Add Outline
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder_name:
+        description: 'Tên thư mục bên trong 1drive:LSC_Books/ADD/'
+        required: true
+        type: string
+
+jobs:
+  add-outline:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_PATH: "1drive:LSC_Books/ADD/${{ inputs.folder_name }}"
+      DEST_PATH: "1drive:LSC_Merged"
+      
+    steps:
+      - name: 1. Install Dependencies
+        run: |
+          sudo apt-get update
+          # Thêm exiftool vào đây
+          sudo apt-get install -y rclone pdftk-java exiftool 
+
+      - name: 2. Configure Rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: 3. Download Files
+        run: |
+          mkdir -p workspace
+          cd workspace
+          
+          echo "Downloading files from $SOURCE_PATH"
+          rclone copy "$SOURCE_PATH" . --include "*.pdf" --include "*.txt"
+          if [ $? -ne 0 ]; then echo "::error::Failed to download files from $SOURCE_PATH"; exit 1; fi
+
+          PDF_FILE=$(ls *.pdf | head -n 1)
+          TXT_FILE=$(ls *.txt | head -n 1)
+          
+          if [ -z "$PDF_FILE" ] || [ -z "$TXT_FILE" ]; then
+            echo "::error::PDF or TXT file not found in $SOURCE_PATH"
+            exit 1
+          fi
+          
+          OUTPUT_FILE="${{ inputs.folder_name }}.pdf"
+
+          echo "PDF_FILE=$PDF_FILE" >> $GITHUB_ENV
+          echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
+          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
+
+      - name: 4. Apply Outline 
+        run: |
+          cd workspace
+          echo "Applying ${TXT_FILE} to ${PDF_FILE}..."
+          pdftk "${PDF_FILE}" update_info "${TXT_FILE}" output "${OUTPUT_FILE}"
+          if [ $? -ne 0 ]; then echo "::error::pdftk command failed"; exit 1; fi
+          echo "Outline applied successfully."
+
+      - name: 5. Force PDF Metadata 
+        run: |
+          cd workspace
+          echo "Forcing metadata update with ExifTool for ${OUTPUT_FILE}..."
+          exiftool -Title="LSC" \
+                   -Author="LSC" \
+                   -Subject="LSC" \
+                   -Creator="LSC" \
+                   -Producer="LSC" \
+                   -overwrite_original \
+                   "${OUTPUT_FILE}"
+          echo "Metadata update complete."
+
+      - name: 6. Upload Result
+        run: |
+          cd workspace
+          echo "Uploading ${OUTPUT_FILE} to $DEST_PATH..."
+          rclone copy "${OUTPUT_FILE}" "$DEST_PATH"
+          if [ $? -ne 0 ]; then echo "::error::Failed to upload new PDF"; exit 1; fi
+          echo "Upload complete."
+
+      - name: 7. Create Artifact for Bot
+        run: |
+          cd workspace
+          NEW_LINK=$(rclone link "$DEST_PATH/${OUTPUT_FILE}")
+          BOOK_NAME=$(echo "${{ inputs.folder_name }}" | tr '_' ' ')
+          
+          echo "✅ *Thêm Outline Thành Công*\n\n" > artifact.txt
+          echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
+          echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
+
+      - name: 8. Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: bot-message
+          path: workspace/artifact.txt
