@@ -53,22 +53,41 @@ jobs:
           echo "Download complete."
           
           CLEAN_DIR_NAME=$(echo "$TARGET_DIR_NAME" | tr ' ' '_')
-          FINAL_FILE_NAME="${CLEAN_DIR_NAME}_TongHop.pdf"
+          
+          FINAL_FILE_NAME="${CLEAN_DIR_NAME}.pdf"
           
           echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
           echo "Output filename will be: $FINAL_FILE_NAME"
 
-      - name: 4. Merge PDFs and Generate Outline (FIXED)
+      - name: 4. Merge PDFs, Generate Outline, and Set Metadata
         run: |
           cd downloads
           
-          BOOKMARK_FILE="bookmarks.txt"
+          BOOKMARK_FILE="metadata_and_bookmarks.txt"
           MERGED_TEMP_FILE="merged_temp.pdf"
           FINAL_FILE="${{ env.FINAL_FILE_NAME }}"
           
           rm -f "$BOOKMARK_FILE" "$MERGED_TEMP_FILE" "$FINAL_FILE"
 
-          echo "Generating bookmark file..."
+          echo "Setting PDF Metadata (GMT+7)..."
+          PDF_DATE=$(TZ='Asia/Ho_Chi_Minh' date +"D:%Y%m%d%H%M%S+07'00'")
+
+          echo "InfoKey: Title" > "$BOOKMARK_FILE"
+          echo "InfoValue: LSC" >> "$BOOKMARK_FILE"
+          echo "InfoKey: Author" >> "$BOOKMARK_FILE"
+          echo "InfoValue: LSC" >> "$BOOKMARK_FILE"
+          echo "InfoKey: Subject" >> "$BOOKMARK_FILE"
+          echo "InfoValue: LSC" >> "$BOOKMARK_FILE"
+          echo "InfoKey: Creator" >> "$BOOKMARK_FILE"
+          echo "InfoValue: LSC" >> "$BOOKMARK_FILE"
+          echo "InfoKey: Producer" >> "$BOOKMARK_FILE"
+          echo "InfoValue: LSC" >> "$BOOKMARK_FILE"
+          echo "InfoKey: CreationDate" >> "$BOOKMARK_FILE"
+          echo "InfoValue: $PDF_DATE" >> "$BOOKMARK_FILE"
+          echo "InfoKey: ModDate" >> "$BOOKMARK_FILE"
+          echo "InfoValue: $PDF_DATE" >> "$BOOKMARK_FILE"
+
+          echo "Generating bookmark entries..."
           PAGE_COUNT=1
 
           mapfile -t pdf_files < <(ls -v *.pdf)
@@ -97,7 +116,7 @@ jobs:
           echo "Merging PDF files..."
           pdftk "${pdf_files[@]}" cat output "$MERGED_TEMP_FILE"
           
-          echo "Applying outlines (bookmarks)..."
+          echo "Applying outlines and metadata..."
           pdftk "$MERGED_TEMP_FILE" update_info "$BOOKMARK_FILE" output "$FINAL_FILE"
           
           rm "$MERGED_TEMP_FILE" "$BOOKMARK_FILE"
