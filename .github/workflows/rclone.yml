@@ -1,4 +1,4 @@
-name: Rclone 
+  name: Rclone
 
 on:
   workflow_dispatch:
@@ -33,14 +33,12 @@ jobs:
           echo $RCLONE_CONF_BASE64 | base64 -d > ~/.config/rclone/rclone.conf
           echo "Rclone configuration complete."
 
-     
       - name: Install gdown
         run: |
           echo "Installing gdown..."
           pip install gdown
           echo "gdown installed."
 
-    
       - name: Download File (using gdown)
         id: download
         run: |
@@ -48,14 +46,15 @@ jobs:
           
           echo "Downloading file with gdown (handles GDrive/OneDrive)..."
           
-          # Chạy gdown, bắt lại log (cả stdout và stderr)
           GDOWN_LOG=$(gdown --fuzzy "$URL" 2>&1)
           
           echo "$GDOWN_LOG"
           
-          # Tìm tên file từ log của gdown
-          # Nó sẽ tìm "Saved to:" (cho GDrive) hoặc "Downloading to:" (cho link thường)
-          LOCAL_FILE=$(echo "$GDOWN_LOG" | grep -oP "(?<=Saved to: |Downloading to: )[']?\K[^']+")
+          LOCAL_FILE=$(echo "$GDOWN_LOG" | grep -oP "(?<=To: |Saved to: |Downloading to: ).*")
+          
+          LOCAL_FILE=$(echo $LOCAL_FILE)
+          
+          LOCAL_FILE=${LOCAL_FILE//\'/}
           
           if [ -z "$LOCAL_FILE" ]; then
             echo "ERROR: Could not download file or determine filename from gdown output."
