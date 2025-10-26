@@ -1,0 +1,114 @@
+name: "Intelligent Download Book"
+on:
+  workflow_dispatch:
+    inputs:
+      BOOK_ID:
+        description: "BOOK_ID to download"
+        required: true
+        default: "1"
+      THREADS:
+        description: "Số luồng tải ảnh đồng thời (max threads)"
+        required: true
+        default: "512"
+      MERGE_TO_SINGLE_FILE:
+        description: "Gộp các chương thành 1 file PDF (kèm mục lục)?"
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "yes"
+          - "no"
+env:
+  TZ: Asia/Ho_Chi_Minh
+jobs:
+  download:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 720
+    env:
+      BOOK_ID: ${{ github.event.inputs.BOOK_ID }}
+      THREADS: ${{ github.event.inputs.THREADS }}
+      MERGE_PDF: ${{ github.event.inputs.MERGE_TO_SINGLE_FILE }}
+      PYTHONPATH: ${{ github.workspace }}
+      RCLONE_DEST: ${{ '1drive:/LSC_Books' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/sachyhocpdf_downloader-main'
+          token: ${{ secrets.ACTION_TOKEN }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Select Account Sequentially
+        id: select_account
+        env:
+          ACCOUNTS_SECRET: ${{ secrets.BHLNK_ACCOUNTS }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          ACCOUNTS_LIST=$(echo "${ACCOUNTS_SECRET}" | sed '/^\s*$/d')
+          TOTAL_ACCOUNTS=$(echo "${ACCOUNTS_LIST}" | wc -l)
+          ACCOUNT_INDEX=$(( (RUN_NUMBER - 1) % TOTAL_ACCOUNTS ))
+          LINE_NUM=$((ACCOUNT_INDEX + 1))
+          ACCOUNT_LINE=$(echo "${ACCOUNTS_LIST}" | awk "NR==${LINE_NUM}")
+          BHLNK_EMAIL_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f1)
+          BHLNK_PASSWORD_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)
+          # Thêm mask để che thông tin nhạy cảm
+          echo "::add-mask::$BHLNK_EMAIL_VALUE"
+          echo "::add-mask::$BHLNK_PASSWORD_VALUE"
+          echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
+          echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3-tk jq
+          python -m pip install -U pip
+          pip install requests Pillow psutil
+          if [ -f requirements.txt ]; then
+            grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
+            pip install -r requirements_linux.txt
+          fi
+      - name: Install and configure rclone
+        env:
+          RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
+      - name: Run Intelligent Download Script
+        id: download_script
+        run: python -u scripts/download_one.py
+      - name: Read Download Status
+        id: status_reader
+        if: always()
+        run: |
+          if [ -f "download_status.txt" ]; then
+            STATUS=$(cat download_status.txt)
+            echo "DOWNLOAD_STATUS=$STATUS" >> $GITHUB_OUTPUT
+          else
+            echo "DOWNLOAD_STATUS=SCRIPT_ERROR" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+      - name: Sanitize Folder Name
+        id: sanitize
+        if: hashFiles('folder_name.txt') != ''
+        run: |
+          ORIGINAL_NAME=$(cat folder_name.txt)
+          SANITIZED_NAME=$(echo "$ORIGINAL_NAME" | sed 's#[*:<>?\/\\|]#_#g')
+          if [ "$ORIGINAL_NAME" != "$SANITIZED_NAME" ]; then
+            mv -- "$ORIGINAL_NAME" "$SANITIZED_NAME"
+          fi
+          echo "sanitized_name=$SANITIZED_NAME" >> $GITHUB_OUTPUT
+      - name: Upload Book
+        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
+        run: |
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          TARGET="${RCLONE_DEST}/${FOLDER_NAME}"
+          rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
+        shell: bash
+      - name: Upload Result Message
+        if: success() && hashFiles('telegram_message.txt') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-message-${{ github.run_id }}
+          path: telegram_message.txt
+          retention-days: 1
