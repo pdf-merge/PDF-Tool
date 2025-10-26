@@ -58,7 +58,7 @@ jobs:
           echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
           echo "Output filename will be: $FINAL_FILE_NAME"
 
-      - name: 4. Merge PDFs and Generate Outline
+      - name: 4. Merge PDFs and Generate Outline (FIXED)
         run: |
           cd downloads
           
@@ -71,7 +71,9 @@ jobs:
           echo "Generating bookmark file..."
           PAGE_COUNT=1
 
-          for f in $(ls -v *.pdf); do
+          mapfile -t pdf_files < <(ls -v *.pdf)
+
+          for f in "${pdf_files[@]}"; do
               if [ "$f" == "$MERGED_TEMP_FILE" ] || [ "$f" == "$FINAL_FILE" ]; then
                   continue
               fi
@@ -93,7 +95,7 @@ jobs:
           echo "Bookmark file ($BOOKMARK_FILE) created successfully."
           
           echo "Merging PDF files..."
-          pdftk $(ls -v *.pdf) cat output "$MERGED_TEMP_FILE"
+          pdftk "${pdf_files[@]}" cat output "$MERGED_TEMP_FILE"
           
           echo "Applying outlines (bookmarks)..."
           pdftk "$MERGED_TEMP_FILE" update_info "$BOOKMARK_FILE" output "$FINAL_FILE"
