@@ -90,7 +90,7 @@ jobs:
           echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
 
       - name: 8. Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bot-message
           path: workspace/artifact.txt
