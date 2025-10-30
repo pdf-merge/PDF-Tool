@@ -28,14 +28,17 @@ jobs:
           mkdir -p ~/.config/rclone
           echo $RCLONE_CONFIG_BASE64 | base64 --decode > ~/.config/rclone/rclone.conf
           
+        
       - name: Run Rclone Sync
         run: |
           set -o pipefail
           echo "Starting rclone copy from gdrive1:${{ github.event.inputs.source_path }} to 1drive:${{ github.event.inputs.destination_path }}"
           rclone copy "gdrive1:${{ github.event.inputs.source_path }}" "1drive:${{ github.event.inputs.destination_path }}" \
+            --drive-server-side-across-configs=true \
+            --transfers 32 \
+            --checkers 32 \
             --verbose \
-            --transfers 10 \
-            --stats 30s \
+            --stats 10s \
             --stats-one-line \
             2>&1 | tee rclone_log.txt
 
