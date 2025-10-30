@@ -1,0 +1,150 @@
+name: OTA Dump
+on:
+  workflow_dispatch:
+    inputs:
+      ROM_URL:
+        description: 'URL to the OTA zip file'
+        required: true
+      UPLOAD_TARGETS:
+        description: 'Select which directories to upload.'
+        required: true
+        type: choice
+        options:
+          - apk_only
+          - extracted
+          - output
+          - both
+        default: 'apk_only'
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/new-dump'
+          token: ${{ secrets.ACTION_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 uuid-dev liblz4-tool jq
+          pip install poetry
+          sed -i 's/README.md/readme.md/g' pyproject.toml
+          poetry install
+
+      - name: Erofs-utils setup
+        run: |
+          aria2c -x16 -s16 https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-1.6.tar.gz
+          tar -xzf erofs-utils-1.6.tar.gz
+          cd erofs-utils-1.6/
+          ./autogen.sh
+          ./configure
+          make
+          sudo make install
+
+      - name: Download ROM
+        run: |
+          aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "${{ github.event.inputs.ROM_URL }}"
+
+      - name: Extract Info & Rename ROM
+        id: rom_info
+        run: |
+          chmod +x $GITHUB_WORKSPACE/scripts/get_rom_info.sh
+          $GITHUB_WORKSPACE/scripts/get_rom_info.sh rom.zip
+
+      - name: Process File
+        id: process_step
+        run: |
+          chmod +x $GITHUB_WORKSPACE/scripts/dump_and_extract.sh
+          if [ -z "${{ steps.rom_info.outputs.new_filename }}" ]; then
+            echo "::error::new_filename không được tạo. Dừng quy trình."
+            exit 1
+          fi
+          $GITHUB_WORKSPACE/scripts/dump_and_extract.sh "${{ steps.rom_info.outputs.new_filename }}"
+
+      - name: Set Upload Folder Name
+        id: set_folder
+        run: |
+          FULL_FILENAME="${{ steps.rom_info.outputs.new_filename }}"
+          
+          if [ -z "$FULL_FILENAME" ]; then
+            echo "::error::Tên file đầy đủ bị trống. Dừng lại."
+            exit 1
+          fi
+
+          FOLDER_NAME="${FULL_FILENAME%.zip}"
+
+          echo "UPLOAD_FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
+          echo "✅ Final Upload Folder Name: $FOLDER_NAME"
+
+      - name: Configure rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF2 }}" | base64 --decode > ~/.config/rclone/rclone.conf
+      
+      - name: Upload Dumps and Generate Link
+        env:
+          RCLONE_DEST: "1drive:OTA_DUMPS"
+        run: |
+          INCLUDE_FLAGS=""
+          if [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "apk_only" ]]; then
+            echo "Upload target: apk_only. Deleting non-apk files..."
+            find extracted output -type f ! -name "*.apk" -delete
+            INCLUDE_FLAGS="--include /output/** --include /extracted/**"
+          elif [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "extracted" ]]; then
+            INCLUDE_FLAGS="--include /extracted/**"
+          elif [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "output" ]]; then
+            INCLUDE_FLAGS="--include /output/**"
+          elif [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "both" ]]; then
+            INCLUDE_FLAGS="--include /output/** --include /extracted/**"
+          fi
+          
+          echo "Preparing to upload to ${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
+          rclone copy . "${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}" \
+             $INCLUDE_FLAGS \
+            --transfers=16 \
+            --checkers=32 \
+            --log-level NOTICE \
+            --stats-one-line \
+            --stats 30s
+          
+          FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
+          echo "Verifying upload at: ${FULL_REMOTE_PATH}"
+          FILE_COUNT=$(rclone lsf --max-depth 2 "${FULL_REMOTE_PATH}" | wc -l)
+          
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "✅ Upload confirmed."
+            UPLOAD_SIZE=$(rclone size --json --copy-links "${FULL_REMOTE_PATH}" | jq -r '.bytes' | awk '{ sum=$1 ; hum[1024**3]="GB";hum[1024**2]="MB";hum[1024]="KB"; for (x=1024**3; x>=1024; x/=1024){ if (sum>=x) { printf "%.2f %s\n",sum/x,hum[x];break } }}')
+            UPLOAD_LINK=$(rclone link "${FULL_REMOTE_PATH}")
+            if [ -z "${UPLOAD_LINK}" ]; then UPLOAD_LINK="Không thể tạo link."; fi
+          else
+            echo "❌ Error: Upload verification failed."
+            UPLOAD_SIZE="N/A"
+            UPLOAD_LINK="Tải lên thất bại."
+          fi
+          
+          echo "::add-mask::${UPLOAD_LINK}"
+          echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
+          echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
+          echo "BOT_OUTPUT::Link Tải=${UPLOAD_LINK}"
