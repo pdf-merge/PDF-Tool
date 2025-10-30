@@ -84,17 +84,19 @@ jobs:
           SOURCE_TYPE="${{ github.event.inputs.source_type }}"
           FILE_PATH="${{ github.event.inputs.file_path }}"
 
+          RCLONE_OPTS="-P --stats 10s --multi-thread-streams=16"
+
           if [[ "$SOURCE_TYPE" == "url" ]]; then
             echo "Downloading from URL: $FILE_PATH"
             aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
 
           elif [[ "$SOURCE_TYPE" == "onedrive" ]]; then
             echo "Copying from 1drive:Mirror/$FILE_PATH"
-            rclone copyto "1drive:Mirror/$FILE_PATH" ./rom.zip -P --stats 10s
+            rclone copyto "1drive:Mirror/$FILE_PATH" ./rom.zip $RCLONE_OPTS --onedrive-chunk-size=256M
 
           elif [[ "$SOURCE_TYPE" == "gdrive" ]]; then
             echo "Copying from gdrive1:VS_Stock/$FILE_PATH"
-            rclone copyto "gdrive1:VS_Stock/$FILE_PATH" ./rom.zip -P --stats 10s
+            rclone copyto "gdrive1:VS_Stock/$FILE_PATH" ./rom.zip $RCLONE_OPTS --drive-chunk-size=256M
           
           else
             echo "::error::Invalid source_type selected."
@@ -183,3 +185,4 @@ jobs:
           echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
           echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
           echo "BOT_OUTPUT::Link Tải=${UPLOAD_LINK}"
+
