@@ -6,7 +6,7 @@ on:
       source_path:
         description: 'Source GDrive Path (gdrive1:)'
         required: true
-        default: 'TenThuMucGoc'
+        default: 'VS_Stock/'
       destination_path:
         description: 'Destination OneDrive Path (1drive:)'
         required: true
