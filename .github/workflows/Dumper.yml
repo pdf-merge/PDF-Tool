@@ -1,9 +1,19 @@
 name: OTA Dump
+
 on:
   workflow_dispatch:
     inputs:
-      ROM_URL:
-        description: 'URL to the OTA zip file'
+      source_type:
+        description: 'Source: URL or Cloud Drive?'
+        required: true
+        type: choice
+        default: 'url'
+        options:
+          - url
+          - onedrive
+          - gdrive
+      file_path:
+        description: 'URL (if source=url) or Filename (if source=drive)'
         required: true
       UPLOAD_TARGETS:
         description: 'Select which directories to upload.'
@@ -52,6 +62,13 @@ jobs:
           sed -i 's/README.md/readme.md/g' pyproject.toml
           poetry install
 
+      - name: Configure rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF2 }}" | base64 --decode > ~/.config/rclone/rclone.conf
+          echo "Rclone configured."
+
       - name: Erofs-utils setup
         run: |
           aria2c -x16 -s16 https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-1.6.tar.gz
@@ -62,9 +79,33 @@ jobs:
           make
           sudo make install
 
-      - name: Download ROM
+      - name: Get ROM File
         run: |
-          aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "${{ github.event.inputs.ROM_URL }}"
+          SOURCE_TYPE="${{ github.event.inputs.source_type }}"
+          FILE_PATH="${{ github.event.inputs.file_path }}"
+
+          if [[ "$SOURCE_TYPE" == "url" ]]; then
+            echo "Downloading from URL: $FILE_PATH"
+            aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
+
+          elif [[ "$SOURCE_TYPE" == "onedrive" ]]; then
+            echo "Copying from 1drive:Mirror/$FILE_PATH"
+            rclone copyto "1drive:Mirror/$FILE_PATH" ./rom.zip -P --stats 10s
+
+          elif [[ "$SOURCE_TYPE" == "gdrive" ]]; then
+            echo "Copying from gdrive1:VS_Stock/$FILE_PATH"
+            rclone copyto "gdrive1:VS_Stock/$FILE_PATH" ./rom.zip -P --stats 10s
+          
+          else
+            echo "::error::Invalid source_type selected."
+            exit 1
+          fi
+          
+          if [ ! -f rom.zip ]; then
+            echo "::error::rom.zip was not created. Check source and path."
+            exit 1
+          fi
+          echo "File rom.zip is ready."
 
       - name: Extract Info & Rename ROM
         id: rom_info
@@ -96,12 +137,6 @@ jobs:
 
           echo "UPLOAD_FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
           echo "✅ Final Upload Folder Name: $FOLDER_NAME"
-
-      - name: Configure rclone
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-          mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF2 }}" | base64 --decode > ~/.config/rclone/rclone.conf
       
       - name: Upload Dumps and Generate Link
         env:
@@ -122,12 +157,12 @@ jobs:
           
           echo "Preparing to upload to ${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
           rclone copy . "${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}" \
-             $INCLUDE_FLAGS \
-            --transfers=16 \
-            --checkers=32 \
-            --log-level NOTICE \
-            --stats-one-line \
-            --stats 30s
+              $INCLUDE_FLAGS \
+              --transfers=16 \
+              --checkers=32 \
+              --log-level NOTICE \
+              --stats-one-line \
+              --stats 30s
           
           FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
           echo "Verifying upload at: ${FULL_REMOTE_PATH}"
