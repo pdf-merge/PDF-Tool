@@ -11,11 +11,28 @@ on:
         description: 'Destination OneDrive Path (1drive:)'
         required: true
         default: 'Mirror'
+      sync_method:
+        description: 'Sync Method'
+        required: true
+        type: choice
+        options:
+          - direct
+          - local
+        default: 'direct'
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
       - name: Install rclone
         run: |
           sudo apt-get update
@@ -28,16 +45,45 @@ jobs:
           mkdir -p ~/.config/rclone
           echo $RCLONE_CONFIG_BASE64 | base64 --decode > ~/.config/rclone/rclone.conf
           
-      - name: Run Rclone Sync
+      - name: Run Rclone Copy (Direct Method)
+        if: github.event.inputs.sync_method == 'direct'
         run: |
           set -o pipefail
-          echo "Starting rclone copy from gdrive1:${{ github.event.inputs.source_path }} to 1drive:${{ github.event.inputs.destination_path }}"
+          echo "Starting Rclone (Direct Method): gdrive1:${{ github.event.inputs.source_path }} -> 1drive:${{ github.event.inputs.destination_path }}"
           rclone copy "gdrive1:${{ github.event.inputs.source_path }}" "1drive:${{ github.event.inputs.destination_path }}" \
             --verbose \
             --transfers 10 \
-            --stats 30s \
+            --stats 10s \
             --stats-one-line \
-            2>&1 | tee rclone_log.txt
+            2>&1 | tee /dev/null
+
+      - name: Run Rclone (Local Method)
+        if: github.event.inputs.sync_method == 'local'
+        run: |
+          set -o pipefail
+          echo "WARNING: Using local method. This may fail if data is larger than runner disk space."
+          
+          LOCAL_DIR="transfer_data"
+          mkdir -p $LOCAL_DIR
+          
+          echo "Step 1: Downloading from gdrive1:${{ github.event.inputs.source_path }} to $LOCAL_DIR"
+          rclone copy "gdrive1:${{ github.event.inputs.source_path }}" "$LOCAL_DIR" \
+            --verbose \
+            --transfers 10 \
+            --stats 10s \
+            --stats-one-line \
+            2>&1 | tee /dev/null
+          
+          echo "Step 2: Uploading from $LOCAL_DIR to 1drive:${{ github.event.inputs.destination_path }}"
+          rclone copy "$LOCAL_DIR" "1drive:${{ github.event.inputs.destination_path }}" \
+            --verbose \
+            --transfers 10 \
+            --stats 10s \
+            --stats-one-line \
+            2>&1 | tee /dev/null
+            
+          echo "Step 3: Cleaning up $LOCAL_DIR"
+          rm -rf $LOCAL_DIR
 
       - name: Send Telegram Notification
         if: always()
@@ -49,6 +95,8 @@ jobs:
           message: |
             *Rclone Job Finished*
             Status: `${{ job.status }}`
+            Method: `${{ github.event.inputs.sync_method }}`
             Source: `gdrive1:${{ github.event.inputs.source_path }}`
             Destination: `1drive:${{ github.event.inputs.destination_path }}`
-            
+            Workflow: `${{ github.workflow }}`
+            Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
