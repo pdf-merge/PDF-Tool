@@ -14,18 +14,41 @@ jobs:
     env:
       SOURCE_PATH: "1drive:LSC_Books/ADD/${{ inputs.folder_name }}"
       DEST_PATH: "1drive:LSC_Merged"
-
+      
     steps:
-      - name: 1. Install Dependencies
+      - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
+          # 1. Update (Theo yêu cầu)
           sudo apt-get update
-          sudo apt-get install -y rclone pdftk-java exiftool
           
+          # 2. Cài Git để có thể checkout
+          echo "Cài đặt Git..."
+          sudo apt-get install -y git
+          
+          # 3. Checkout (Theo yêu cầu)
+          echo "Cloning OCRmyPDF repository..."
+          git clone https://github.com/ocrmypdf/OCRmyPDF.git
+          
+          # 4. Install các dependencies hệ thống còn lại
+          echo "Cài đặt các gói xử lý PDF, rclone, pip và các thư viện cho OCRmyPDF..."
+          sudo apt-get install -y \
+            rclone pdftk-java exiftool \
+            python3-pip python3-dev \
+            ghostscript qpdf \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+            libopenjp2-7 libffi-dev libssl-dev
+          
+          # 5. Install OCRmyPDF từ source đã checkout
+          cd OCRmyPDF
+          echo "Installing OCRmyPDF from source code..."
+          pip install .
+          echo "OCRmyPDF đã được cài đặt."
+
       - name: 2. Configure Rclone
         run: |
           mkdir -p ~/.config/rclone
           echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
-          
+
       - name: 3. Download Files
         run: |
           mkdir -p workspace
@@ -39,7 +62,7 @@ jobs:
           TXT_FILE=$(ls *.txt | head -n 1)
           
           if [ -z "$PDF_FILE" ] || [ -z "$TXT_FILE" ]; then
-            echo "::error::PDF or TXT file not found in $SOURCE_PATH"
+            echo "::error::PDF or Txt file not found in $SOURCE_PATH"
             exit 1
           fi
           
@@ -47,28 +70,29 @@ jobs:
           echo "PDF_FILE=$PDF_FILE" >> $GITHUB_ENV
           echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
           echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
-          
-      - name: 4. Run OCRmyPDF
+
+      - name: 4. Run OCRmyPDF (from source)
         run: |
           cd workspace
           echo "Bắt đầu OCR file: ${{ env.PDF_FILE }}..."
-
+          
           TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
-          docker run --rm \
-            -v "$(pwd):/data" \
-            jbarlow83/ocrmypdf-polyglot \
+          
+          # Lệnh này sẽ dùng ocrmypdf đã cài từ source ở bước 1
+          ocrmypdf \
             --language "vie+eng" \
             --skip-text \
             "${{ env.PDF_FILE }}" \
             "$TEMP_OCR_FILE"
+            
           if [ $? -ne 0 ]; then 
              echo "::error::OCRmyPDF command failed"
             exit 1
           fi
+          
           echo "✅ OCR hoàn tất. Ghi đè file PDF gốc..."
           mv "$TEMP_OCR_FILE" "${{ env.PDF_FILE }}"
-          
-          
+
       - name: 5. Apply Outline
         run: |
           cd workspace
@@ -76,7 +100,7 @@ jobs:
           pdftk "${PDF_FILE}" update_info "${TXT_FILE}" output "${OUTPUT_FILE}"
           if [ $? -ne 0 ]; then echo "::error::pdftk command failed"; exit 1; fi
           echo "Outline applied successfully."
-          
+
       - name: 6. Force PDF Metadata
         run: |
           cd workspace
@@ -89,7 +113,7 @@ jobs:
                    -overwrite_original \
                    "${OUTPUT_FILE}"
           echo "Metadata update complete."
-          
+
       - name: 7. Upload Result
         run: |
           cd workspace
@@ -97,7 +121,7 @@ jobs:
           rclone copy "${OUTPUT_FILE}" "$DEST_PATH"
           if [ $? -ne 0 ]; then echo "::error::Failed to upload new PDF"; exit 1; fi
           echo "Upload complete."
-          
+
       - name: 8. Create Artifact for Bot
         run: |
           cd workspace
@@ -107,9 +131,10 @@ jobs:
           echo "✅ *OCR & Thêm Outline Thành Công*\n\n" > artifact.txt
           echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
           echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
-          
+
       - name: 9. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: bot-message
           path: workspace/artifact.txt
+          
