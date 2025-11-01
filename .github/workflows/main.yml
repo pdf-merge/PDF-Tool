@@ -15,6 +15,14 @@ on:
         description: "Số luồng tải ảnh đồng thời (max threads)"
         required: true
         default: "512"
+      PERFORM_OCR:
+        description: "Thực hiện OCR cho tất cả sách?"
+        required: true
+        default: "yes"
+        type: choice
+        options:
+          - "yes"
+          - "no"
 
 env:
   TZ: Asia/Ho_Chi_Minh
@@ -27,6 +35,7 @@ jobs:
       FROM_ID: ${{ github.event.inputs.FROM_ID }}
       TO_ID: ${{ github.event.inputs.TO_ID }}
       THREADS: ${{ github.event.inputs.THREADS }}
+      PERFORM_OCR: ${{ github.event.inputs.PERFORM_OCR }}
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
@@ -49,7 +58,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      
+          
       - name: Select Account from Pool 2
         id: select_account
         env:
@@ -63,21 +72,38 @@ jobs:
           ACCOUNT_LINE=$(echo "${ACCOUNTS_LIST}" | awk "NR==${LINE_NUM}")
           BHLNK_EMAIL_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f1)
           BHLNK_PASSWORD_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)
-          # Thêm mask để che thông tin nhạy cảm
           echo "::add-mask::$BHLNK_EMAIL_VALUE"
           echo "::add-mask::$BHLNK_PASSWORD_VALUE"
           echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
           echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
 
-      - name: Install dependencies
+      - name: Install Base Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y python3-tk jq
+          sudo apt-get update
+          sudo apt-get install -y \
+            git python3-tk jq exiftool \
+            ghostscript qpdf \
+            libopenjp2-7 libffi-dev libssl-dev
+            
           python -m pip install -U pip
-          pip install requests Pillow
+          pip install requests Pillow psutil
           if [ -f requirements.txt ]; then
             grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
             pip install -r requirements_linux.txt
           fi
+          
+      - name: Install OCR Dependencies (Conditional)
+        if: env.PERFORM_OCR == 'yes'
+        run: |
+          echo "Installing OCR dependencies..."
+          sudo apt-get install -y \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng
+          
+          git clone https://github.com/ocrmypdf/OCRmyPDF.git
+          cd OCRmyPDF
+          pip install .
+          cd ..
+          echo "OCR dependencies installed."
 
       - name: Install and configure rclone
         env:
