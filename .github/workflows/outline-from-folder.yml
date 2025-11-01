@@ -18,31 +18,17 @@ jobs:
     steps:
       - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
-          # 1. Update (Theo yêu cầu)
           sudo apt-get update
-          
-          # 2. Cài Git để có thể checkout
-          echo "Cài đặt Git..."
           sudo apt-get install -y git
-          
-          # 3. Checkout (Theo yêu cầu)
-          echo "Cloning OCRmyPDF repository..."
           git clone https://github.com/ocrmypdf/OCRmyPDF.git
-          
-          # 4. Install các dependencies hệ thống còn lại
-          echo "Cài đặt các gói xử lý PDF, rclone, pip và các thư viện cho OCRmyPDF..."
           sudo apt-get install -y \
             rclone pdftk-java exiftool \
             python3-pip python3-dev \
             ghostscript qpdf \
             tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
             libopenjp2-7 libffi-dev libssl-dev
-          
-          # 5. Install OCRmyPDF từ source đã checkout
           cd OCRmyPDF
-          echo "Installing OCRmyPDF from source code..."
           pip install .
-          echo "OCRmyPDF đã được cài đặt."
 
       - name: 2. Configure Rclone
         run: |
@@ -71,14 +57,13 @@ jobs:
           echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
           echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
 
-      - name: 4. Run OCRmyPDF (from source)
+      - name: 4. Run OCR
         run: |
           cd workspace
           echo "Bắt đầu OCR file: ${{ env.PDF_FILE }}..."
           
           TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
           
-          # Lệnh này sẽ dùng ocrmypdf đã cài từ source ở bước 1
           ocrmypdf \
             --language "vie+eng" \
             --skip-text \
@@ -86,7 +71,7 @@ jobs:
             "$TEMP_OCR_FILE"
             
           if [ $? -ne 0 ]; then 
-             echo "::error::OCRmyPDF command failed"
+              echo "::error::OCRmyPDF command failed"
             exit 1
           fi
           
@@ -137,4 +122,3 @@ jobs:
         with:
           name: bot-message
           path: workspace/artifact.txt
-          
