@@ -10,10 +10,10 @@ on:
         description: "Số luồng tải ảnh đồng thời (max threads)"
         required: true
         default: "512"
-      MERGE_TO_SINGLE_FILE:
-        description: "Gộp các chương thành 1 file PDF (kèm mục lục)?"
+      PERFORM_OCR:
+        description: "Thực hiện OCR (nhận dạng chữ) cho file PDF?"
         required: true
-        default: "no"
+        default: "yes"
         type: choice
         options:
           - "yes"
@@ -27,19 +27,21 @@ jobs:
     env:
       BOOK_ID: ${{ github.event.inputs.BOOK_ID }}
       THREADS: ${{ github.event.inputs.THREADS }}
-      MERGE_PDF: ${{ github.event.inputs.MERGE_TO_SINGLE_FILE }}
+      PERFORM_OCR: ${{ github.event.inputs.PERFORM_OCR }}
       PYTHONPATH: ${{ github.workspace }}
-      RCLONE_DEST: ${{ '1drive:/LSC_Books' }}
+      RCLONE_DEST_DEFAULT: ${{ '1drive:/LSC_Books' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           repository: 'proplayer1131/sachyhocpdf_downloader-main'
           token: ${{ secrets.ACTION_TOKEN }}
+          
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          
       - name: Select Account Sequentially
         id: select_account
         env:
@@ -58,17 +60,14 @@ jobs:
           echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
           echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
           
-      - name: Install Dependencies and OCRmyPDF
+      - name: Install Base Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git
-          git clone https://github.com/ocrmypdf/OCRmyPDF.git
           sudo apt-get install -y \
-            python3-tk jq exiftool \
+            git python3-tk jq exiftool \
             ghostscript qpdf \
-            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
             libopenjp2-7 libffi-dev libssl-dev
-          
+            
           python -m pip install -U pip
           pip install requests Pillow psutil
           if [ -f requirements.txt ]; then
@@ -76,9 +75,18 @@ jobs:
             pip install -r requirements_linux.txt
           fi
           
+      - name: Install OCR Dependencies (Conditional)
+        if: env.PERFORM_OCR == 'yes'
+        run: |
+          echo "Installing OCR dependencies..."
+          sudo apt-get install -y \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng
+          
+          git clone https://github.com/ocrmypdf/OCRmyPDF.git
           cd OCRmyPDF
           pip install .
           cd ..
+          echo "OCR dependencies installed."
           
       - name: Configure Rclone
         env:
@@ -115,12 +123,24 @@ jobs:
           fi
           echo "sanitized_name=$SANITIZED_NAME" >> $GITHUB_OUTPUT
           
-      - name: Run OCRmyPDF
-        id: ocr
+      - name: Set Upload Destination
+        id: set_destination
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
+          if [[ "${{ env.PERFORM_OCR }}" == "yes" ]]; then
+            echo "RCLONE_DEST_PATH=1drive:/LSC_Books_OCR" >> $GITHUB_ENV
+            echo "Upload destination set to OCR folder."
+          else
+            echo "RCLONE_DEST_PATH=${{ env.RCLONE_DEST_DEFAULT }}" >> $GITHUB_ENV
+            echo "Upload destination set to standard folder."
+          fi
+          
+      - name: Run OCRmyPDF (Conditional)
+        id: ocr
+        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != '' && env.PERFORM_OCR == 'yes'
+        run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
-          echo "Entering directory: $FOLDER_NAME"
+          echo "Entering directory for OCR: $FOLDER_NAME"
           cd "$FOLDER_NAME"
           
           echo "Finding PDF files for OCR..."
@@ -147,8 +167,8 @@ jobs:
           
           echo "OCR processing complete."
           
-      - name: Force PDF Metadata
-        id: metadata
+      - name: 'Force PDF Metadata (All Files)'
+        id: metadata_individual
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
@@ -176,11 +196,13 @@ jobs:
           
           echo "Metadata processing complete."
 
-      - name: Upload Book
+      - name: 'Upload Book Folder'
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
-          TARGET="${RCLONE_DEST}/${FOLDER_NAME}"
+          TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
+          
+          echo "Uploading $FOLDER_NAME to $TARGET"
           rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
         shell: bash
         
