@@ -1,10 +1,10 @@
-name: OCR & Merge PDF
+name: OCR & Merge PDF (from Source)
 
 on:
   workflow_dispatch:
     inputs:
       folder_prefix:
-        description: 'Folder prefix (e.g., 107)'
+        description: 'Folder prefix'
         required: true
         type: string
 
@@ -15,10 +15,28 @@ jobs:
       RCLONE_DEST_PATH: "1drive:LSC_Merged"
 
     steps:
-      - name: 1. Install Dependencies
+      - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone pdftk-java exiftool
+          
+          echo "Cài đặt Git..."
+          sudo apt-get install -y git
+          
+          echo "Cloning OCRmyPDF repository..."
+          git clone https://github.com/ocrmypdf/OCRmyPDF.git
+          
+          echo "Cài đặt các gói xử lý PDF, rclone, pip và các thư viện cho OCRmyPDF..."
+          sudo apt-get install -y \
+            rclone pdftk-java exiftool \
+            python3-pip python3-dev \
+            ghostscript qpdf \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+            libopenjp2-7 libffi-dev libssl-dev
+          
+          cd OCRmyPDF
+          echo "Installing OCRmyPDF from source code..."
+          pip install .
+          echo "OCRmyPDF đã được cài đặt."
 
       - name: 2. Configure Rclone
         run: |
@@ -53,10 +71,10 @@ jobs:
           echo "TARGET_DIR_NAME=$TARGET_DIR_NAME" >> $GITHUB_ENV
           echo "Output filename will be: $FINAL_FILE_NAME"
 
-      - name: 4. Run OCRmyPDF on each file
+      - name: 4. Run OCRmyPDF on each file (from source)
         run: |
           cd downloads
-          echo "Starting OCR for all downloaded PDF files..."
+          echo "Starting OCR for all downloaded PDF files (using local install)..."
           
           mapfile -t pdf_files < <(ls -v *.pdf)
           
@@ -64,9 +82,7 @@ jobs:
             echo "Processing OCR for: $f"
             TEMP_OCR_FILE="ocr_${f}"
             
-            docker run --rm \
-              -v "$(pwd):/data" \
-              jbarlow83/ocrmypdf:latest-all \
+            ocrmypdf \
               --language "vie+eng" \
               --skip-text \
               "$f" \
@@ -161,3 +177,4 @@ jobs:
         with:
           name: bot-message
           path: downloads/artifact.txt
+
