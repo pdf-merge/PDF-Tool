@@ -52,24 +52,22 @@ jobs:
         run: |
           cd workspace
           echo "Bắt đầu OCR file: ${{ env.PDF_FILE }}..."
-          
-          TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
 
+          TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
           docker run --rm \
             -v "$(pwd):/data" \
-            jbarlow83/ocrmypdf:latest-all \
+            jbarlow83/ocrmypdf-polyglot \
             --language "vie+eng" \
             --skip-text \
             "${{ env.PDF_FILE }}" \
             "$TEMP_OCR_FILE"
-
           if [ $? -ne 0 ]; then 
-            echo "::error::OCRmyPDF command failed"
+             echo "::error::OCRmyPDF command failed"
             exit 1
           fi
-
           echo "✅ OCR hoàn tất. Ghi đè file PDF gốc..."
           mv "$TEMP_OCR_FILE" "${{ env.PDF_FILE }}"
+          
           
       - name: 5. Apply Outline
         run: |
