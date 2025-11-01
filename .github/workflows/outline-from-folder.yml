@@ -57,7 +57,7 @@ jobs:
 
           docker run --rm \
             -v "$(pwd):/data" \
-            jbarlow83/ocrmypdf:latest \
+            jbarlow83/ocrmypdf:latest-all \
             --language "vie+eng" \
             --skip-text \
             "${{ env.PDF_FILE }}" \
