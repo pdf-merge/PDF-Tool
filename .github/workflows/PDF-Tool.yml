@@ -1,4 +1,4 @@
-name: PDF Merger
+name: OCR & Merge PDF
 
 on:
   workflow_dispatch:
@@ -11,6 +11,8 @@ on:
 jobs:
   merge-pdfs:
     runs-on: ubuntu-latest
+    env:
+      RCLONE_DEST_PATH: "1drive:LSC_Merged"
 
     steps:
       - name: 1. Install Dependencies
@@ -46,10 +48,42 @@ jobs:
           echo "Download complete."
           CLEAN_DIR_NAME=$(echo "$TARGET_DIR_NAME" | tr ' ' '_')
           FINAL_FILE_NAME="${CLEAN_DIR_NAME}.pdf"
+          
           echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
+          echo "TARGET_DIR_NAME=$TARGET_DIR_NAME" >> $GITHUB_ENV
           echo "Output filename will be: $FINAL_FILE_NAME"
 
-      - name: 4. Merge and Create Bookmarks (pdftk)
+      - name: 4. Run OCRmyPDF on each file
+        run: |
+          cd downloads
+          echo "Starting OCR for all downloaded PDF files..."
+          
+          mapfile -t pdf_files < <(ls -v *.pdf)
+          
+          for f in "${pdf_files[@]}"; do
+            echo "Processing OCR for: $f"
+            TEMP_OCR_FILE="ocr_${f}"
+            
+            docker run --rm \
+              -v "$(pwd):/data" \
+              jbarlow83/ocrmypdf:latest \
+              --language "vie+eng" \
+              --skip-text \
+              "$f" \
+              "$TEMP_OCR_FILE"
+            
+            if [ $? -ne 0 ]; then 
+              echo "::error::OCRmyPDF failed for file: $f"
+              exit 1
+            fi
+            
+            mv "$TEMP_OCR_FILE" "$f"
+            echo "✅ OCR complete for: $f"
+          done
+          
+          echo "All files have been processed."
+
+      - name: 5. Merge and Create Bookmarks (pdftk)
         run: |
           cd downloads
           BOOKMARK_FILE="bookmarks.txt"
@@ -58,7 +92,9 @@ jobs:
           rm -f "$BOOKMARK_FILE" "$MERGED_TEMP_FILE" "$FINAL_FILE"
           echo "Generating bookmark file..."
           PAGE_COUNT=1
+          
           mapfile -t pdf_files < <(ls -v *.pdf)
+          
           for f in "${pdf_files[@]}"; do
               if [ "$f" == "$MERGED_TEMP_FILE" ] || [ "$f" == "$FINAL_FILE" ]; then
                   continue
@@ -73,14 +109,14 @@ jobs:
               PAGE_COUNT=$((PAGE_COUNT + CURRENT_PAGES))
           done
           echo "Bookmark file created successfully."
-          echo "Merging PDF files..."
+          echo "Merging PDF files (đã OCR)..."
           pdftk "${pdf_files[@]}" cat output "$MERGED_TEMP_FILE"
           echo "Applying outlines (bookmarks)..."
           pdftk "$MERGED_TEMP_FILE" update_info "$BOOKMARK_FILE" output "$FINAL_FILE"
           rm "$MERGED_TEMP_FILE" "$BOOKMARK_FILE"
           echo "Merge and bookmark complete. Final file: $FINAL_FILE"
 
-      - name: 5. Force PDF Metadata (exiftool)
+      - name: 6. Force PDF Metadata (exiftool)
         run: |
           cd downloads
           FINAL_FILE="${{ env.FINAL_FILE_NAME }}"
@@ -100,10 +136,28 @@ jobs:
                    "$FINAL_FILE"
           echo "Metadata update complete."
 
-      - name: 6. Upload to OneDrive
+      - name: 7. Upload to OneDrive
         run: |
-          RCLONE_DEST_PATH="1drive:LSC_Merged"
           FINAL_FILE_PATH="downloads/${{ env.FINAL_FILE_NAME }}"
-          echo "Uploading $FINAL_FILE_PATH to $RCLONE_DEST_PATH..."
-          rclone copy "$FINAL_FILE_PATH" "$RCLONE_DEST_PATH"
+          echo "Uploading $FINAL_FILE_PATH to ${{ env.RCLONE_DEST_PATH }}..."
+          rclone copy "$FINAL_FILE_PATH" "${{ env.RCLONE_DEST_PATH }}"
           echo "Upload complete."
+
+      - name: 8. Create Artifact for Bot
+        run: |
+          cd downloads
+          FINAL_FILE="${{ env.FINAL_FILE_NAME }}"
+          NEW_LINK=$(rclone link "${{ env.RCLONE_DEST_PATH }}/$FINAL_FILE")
+          
+          BOOK_NAME_RAW=$(echo "${{ env.TARGET_DIR_NAME }}" | sed "s/^${{ inputs.folder_prefix }}_//")
+          BOOK_NAME=$(echo "$BOOK_NAME_RAW" | tr '_' ' ')
+          
+          echo "✅ *OCR & Gộp Sách Thành Công*\n\n" > artifact.txt
+          echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
+          echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
+
+      - name: 9. Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-message
+          path: downloads/artifact.txt
