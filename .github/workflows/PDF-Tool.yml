@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       folder_prefix:
-        description: 'Folder prefix'
+        description: 'Folder prefix (e.g., 107)'
         required: true
         type: string
+      parallel_jobs:
+        description: 'Number of parallel OCR jobs'
+        required: false
+        type: string
+        default: '4'
 
 jobs:
   merge-pdfs:
@@ -18,22 +23,28 @@ jobs:
       - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
           sudo apt-get update
+          
           sudo apt-get install -y git
+          
           git clone https://github.com/ocrmypdf/OCRmyPDF.git
+          
+          echo "Installing dependencies (rclone, pdftk, exiftool, parallel, ocrmypdf)..."
           sudo apt-get install -y \
-            rclone pdftk-java exiftool \
+            rclone pdftk-java exiftool parallel \
             python3-pip python3-dev \
             ghostscript qpdf \
             tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
             libopenjp2-7 libffi-dev libssl-dev
+          
           cd OCRmyPDF
+          echo "Installing OCRmyPDF from source code..."
           pip install .
+          echo "OCRmyPDF successfully installed from source."
 
       - name: 2. Configure Rclone
         run: |
           mkdir -p ~/.config/rclone
           echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
-          echo "Rclone configuration successful."
 
       - name: 3. Find and Download
         env:
@@ -60,16 +71,14 @@ jobs:
           
           echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
           echo "TARGET_DIR_NAME=$TARGET_DIR_NAME" >> $GITHUB_ENV
-          echo "Output filename will be: $FINAL_FILE_NAME"
 
-      - name: 4. Run OCRmyPDF on each file (from source)
+      - name: 4. Run OCRmyPDF on each file (Parallel)
         run: |
           cd downloads
-          echo "Starting OCR for all downloaded PDF files (using local install)..."
+          echo "Starting OCR for all downloaded PDF files (using local install in parallel)..."
           
-          mapfile -t pdf_files < <(ls -v *.pdf)
-          
-          for f in "${pdf_files[@]}"; do
+          run_ocr() {
+            f="$1"
             echo "Processing OCR for: $f"
             TEMP_OCR_FILE="ocr_${f}"
             
@@ -81,12 +90,20 @@ jobs:
             
             if [ $? -ne 0 ]; then 
               echo "::error::OCRmyPDF failed for file: $f"
-              exit 1
+              return 1
             fi
             
             mv "$TEMP_OCR_FILE" "$f"
             echo "✅ OCR complete for: $f"
-          done
+          }
+          export -f run_ocr
+          
+          ls -v *.pdf | parallel -j ${{ inputs.parallel_jobs }} --halt now,fail=1 run_ocr {}
+          
+          if [ $? -ne 0 ]; then 
+            echo "::error::Parallel OCR processing failed."
+            exit 1
+          fi
           
           echo "All files have been processed."
 
@@ -97,7 +114,7 @@ jobs:
           MERGED_TEMP_FILE="merged_temp.pdf"
           FINAL_FILE="${{ env.FINAL_FILE_NAME }}"
           rm -f "$BOOKMARK_FILE" "$MERGED_TEMP_FILE" "$FINAL_FILE"
-          echo "Generating bookmark file..."
+          
           PAGE_COUNT=1
           
           mapfile -t pdf_files < <(ls -v *.pdf)
@@ -115,10 +132,8 @@ jobs:
               CURRENT_PAGES=$(pdftk "$f" dump_data | grep NumberOfPages | awk '{print $2}')
               PAGE_COUNT=$((PAGE_COUNT + CURRENT_PAGES))
           done
-          echo "Bookmark file created successfully."
-          echo "Merging PDF files (đã OCR)..."
+          
           pdftk "${pdf_files[@]}" cat output "$MERGED_TEMP_FILE"
-          echo "Applying outlines (bookmarks)..."
           pdftk "$MERGED_TEMP_FILE" update_info "$BOOKMARK_FILE" output "$FINAL_FILE"
           rm "$MERGED_TEMP_FILE" "$BOOKMARK_FILE"
           echo "Merge and bookmark complete. Final file: $FINAL_FILE"
@@ -127,7 +142,6 @@ jobs:
         run: |
           cd downloads
           FINAL_FILE="${{ env.FINAL_FILE_NAME }}"
-          echo "Forcing metadata update with ExifTool..."
           exiftool -Title="LSC" \
                    -Author="LSC" \
                    -Subject="LSC" \
@@ -136,7 +150,6 @@ jobs:
                    -overwrite_original \
                    "$FINAL_FILE"
           
-          echo "Forcing timestamp to GMT+7 (Asia/Ho_Chi_Minh)..."
           export TZ="Asia/Ho_Chi_Minh"
           exiftool -AllDates="now" \
                    -overwrite_original \
@@ -159,8 +172,8 @@ jobs:
           BOOK_NAME_RAW=$(echo "${{ env.TARGET_DIR_NAME }}" | sed "s/^${{ inputs.folder_prefix }}_//")
           BOOK_NAME=$(echo "$BOOK_NAME_RAW" | tr '_' ' ')
           
-          echo "✅ *OCR & Gộp Sách Thành Công*\n\n" > artifact.txt
-          echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
+          echo "✅ *OCR & Gộp Sách Thành Công* " > artifact.txt
+          echo "🆔 *Sách:* \`$BOOK_NAME\`" >> artifact.txt
           echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
 
       - name: 9. Upload Artifact
