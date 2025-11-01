@@ -95,6 +95,17 @@ jobs:
           mkdir -p ~/.config/rclone
           printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
           
+      - name: Set Upload Destination
+        id: set_destination
+        run: |
+          if [[ "${{ env.PERFORM_OCR }}" == "yes" ]]; then
+            echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
+            echo "Upload destination set to: 1drive:/LSC_Books"
+          else
+            echo "RCLONE_DEST_PATH=1drive:/LSC_Books/No_OCR" >> $GITHUB_ENV
+            echo "Upload destination set to: 1drive:/LSC_Books/No_OCR"
+          fi
+          
       - name: Run Intelligent Download Script
         id: download_script
         run: python -u scripts/download_one.py
@@ -121,18 +132,6 @@ jobs:
             mv -- "$ORIGINAL_NAME" "$SANITIZED_NAME"
           fi
           echo "sanitized_name=$SANITIZED_NAME" >> $GITHUB_OUTPUT
-          
-      - name: Set Upload Destination
-        id: set_destination
-        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
-        run: |
-          if [[ "${{ env.PERFORM_OCR }}" == "yes" ]]; then
-            echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
-            echo "Upload destination set to: 1drive:/LSC_Books"
-          else
-            echo "RCLONE_DEST_PATH=1drive:/LSC_Books/No_OCR" >> $GITHUB_ENV
-            echo "Upload destination set to: 1drive:/LSC_Books/No_OCR"
-          fi
           
       - name: Run OCRmyPDF (Conditional)
         id: ocr
@@ -196,6 +195,7 @@ jobs:
           echo "Metadata processing complete."
 
       - name: 'Upload Book Folder'
+        id: upload_folder
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
@@ -203,8 +203,23 @@ jobs:
           
           echo "Uploading $FOLDER_NAME to $TARGET"
           rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
+          
+          echo "Creating public link for $TARGET"
+          LINK=$(rclone link "$TARGET")
+          if [ -z "$LINK" ]; then
+            LINK="Không thể tạo link"
+          fi
+          echo "::add-mask::$LINK"
+          echo "RCLONE_LINK=$LINK" >> $GITHUB_ENV
         shell: bash
         
+      - name: Update Telegram Message with Link
+        if: steps.upload_folder.outputs.RCLONE_LINK != '' && hashFiles('telegram_message.txt') != ''
+        run: |
+          LINK="${{ env.RCLONE_LINK }}"
+          sed -i "s|\[Đang xử lý...\]|\[Nhấn vào đây\]($LINK)|g" telegram_message.txt
+          echo "Telegram message updated with final link."
+          
       - name: Upload Result Message
         if: success() && hashFiles('telegram_message.txt') != ''
         uses: actions/upload-artifact@v4
