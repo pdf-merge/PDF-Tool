@@ -29,7 +29,6 @@ jobs:
       THREADS: ${{ github.event.inputs.THREADS }}
       PERFORM_OCR: ${{ github.event.inputs.PERFORM_OCR }}
       PYTHONPATH: ${{ github.workspace }}
-      RCLONE_DEST_DEFAULT: ${{ '1drive:/LSC_Books' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -128,11 +127,11 @@ jobs:
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
           if [[ "${{ env.PERFORM_OCR }}" == "yes" ]]; then
-            echo "RCLONE_DEST_PATH=1drive:/LSC_Books_OCR" >> $GITHUB_ENV
-            echo "Upload destination set to OCR folder."
+            echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
+            echo "Upload destination set to: 1drive:/LSC_Books"
           else
-            echo "RCLONE_DEST_PATH=${{ env.RCLONE_DEST_DEFAULT }}" >> $GITHUB_ENV
-            echo "Upload destination set to standard folder."
+            echo "RCLONE_DEST_PATH=1drive:/LSC_Books/No_OCR" >> $GITHUB_ENV
+            echo "Upload destination set to: 1drive:/LSC_Books/No_OCR"
           fi
           
       - name: Run OCRmyPDF (Conditional)
