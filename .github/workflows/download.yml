@@ -1,4 +1,4 @@
-name: "Intelligent Download Book"
+name: "Intelligent Book Downloader"
 on:
   workflow_dispatch:
     inputs:
@@ -53,30 +53,45 @@ jobs:
           ACCOUNT_LINE=$(echo "${ACCOUNTS_LIST}" | awk "NR==${LINE_NUM}")
           BHLNK_EMAIL_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f1)
           BHLNK_PASSWORD_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)
-          # Thêm mask để che thông tin nhạy cảm
           echo "::add-mask::$BHLNK_EMAIL_VALUE"
           echo "::add-mask::$BHLNK_PASSWORD_VALUE"
           echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
           echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
-      - name: Install dependencies
+          
+      - name: Install Dependencies and OCRmyPDF
         run: |
-          sudo apt-get update && sudo apt-get install -y python3-tk jq
+          sudo apt-get update
+          sudo apt-get install -y git
+          git clone https://github.com/ocrmypdf/OCRmyPDF.git
+          sudo apt-get install -y \
+            python3-tk jq exiftool \
+            ghostscript qpdf \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+            libopenjp2-7 libffi-dev libssl-dev
+          
           python -m pip install -U pip
           pip install requests Pillow psutil
           if [ -f requirements.txt ]; then
             grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
             pip install -r requirements_linux.txt
           fi
-      - name: Install and configure rclone
+          
+          cd OCRmyPDF
+          pip install .
+          cd ..
+          
+      - name: Configure Rclone
         env:
           RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
           printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
+          
       - name: Run Intelligent Download Script
         id: download_script
         run: python -u scripts/download_one.py
+        
       - name: Read Download Status
         id: status_reader
         if: always()
@@ -88,6 +103,7 @@ jobs:
             echo "DOWNLOAD_STATUS=SCRIPT_ERROR" >> $GITHUB_OUTPUT
           fi
         shell: bash
+        
       - name: Sanitize Folder Name
         id: sanitize
         if: hashFiles('folder_name.txt') != ''
@@ -98,6 +114,68 @@ jobs:
             mv -- "$ORIGINAL_NAME" "$SANITIZED_NAME"
           fi
           echo "sanitized_name=$SANITIZED_NAME" >> $GITHUB_OUTPUT
+          
+      - name: Run OCRmyPDF
+        id: ocr
+        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
+        run: |
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          echo "Entering directory: $FOLDER_NAME"
+          cd "$FOLDER_NAME"
+          
+          echo "Finding PDF files for OCR..."
+          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
+            echo "---"
+            echo "Processing OCR on: $pdf_file"
+            TEMP_OCR_FILE="ocr_temp_file.pdf"
+            
+            ocrmypdf \
+              --language "vie+eng" \
+              --skip-text \
+              "$pdf_file" \
+              "$TEMP_OCR_FILE"
+            
+            if [ $? -eq 0 ]; then
+              echo "OCR successful. Overwriting original file: $pdf_file"
+              mv "$TEMP_OCR_FILE" "$pdf_file"
+            else
+              echo "::warning::OCR failed on $pdf_file. Skipping this file."
+              rm -f "$TEMP_OCR_FILE"
+            fi
+            echo "---"
+          done
+          
+          echo "OCR processing complete."
+          
+      - name: Force PDF Metadata
+        id: metadata
+        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
+        run: |
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          echo "Entering directory to apply metadata: $FOLDER_NAME"
+          cd "$FOLDER_NAME"
+          
+          echo "Finding PDF files to update metadata..."
+          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
+            echo "Applying LSC metadata to: $pdf_file"
+            
+            exiftool -Title="LSC" \
+                     -Author="LSC" \
+                     -Subject="LSC" \
+                     -Creator="LSC" \
+                     -Producer="LSC" \
+                     -overwrite_original \
+                     "$pdf_file"
+            
+            if [ $? -eq 0 ]; then
+              echo "Metadata update successful for: $pdf_file"
+            else
+              echo "::warning::Metadata update failed for: $pdf_file"
+            fi
+          done
+          
+          echo "Metadata processing complete."
+
       - name: Upload Book
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
@@ -105,6 +183,7 @@ jobs:
           TARGET="${RCLONE_DEST}/${FOLDER_NAME}"
           rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
         shell: bash
+        
       - name: Upload Result Message
         if: success() && hashFiles('telegram_message.txt') != ''
         uses: actions/upload-artifact@v4
