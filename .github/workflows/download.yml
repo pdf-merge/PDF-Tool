@@ -20,6 +20,7 @@ on:
           - "no"
 env:
   TZ: Asia/Ho_Chi_Minh
+
 jobs:
   download:
     runs-on: ubuntu-22.04
@@ -35,12 +36,12 @@ jobs:
         with:
           repository: 'proplayer1131/sachyhocpdf_downloader-main'
           token: ${{ secrets.ACTION_TOKEN }}
-          
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          
+
       - name: Select Account Sequentially
         id: select_account
         env:
@@ -58,7 +59,7 @@ jobs:
           echo "::add-mask::$BHLNK_PASSWORD_VALUE"
           echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
           echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
-          
+
       - name: Install Base Dependencies
         run: |
           sudo apt-get update
@@ -66,27 +67,25 @@ jobs:
             git python3-tk jq exiftool \
             ghostscript qpdf \
             libopenjp2-7 libffi-dev libssl-dev
-            
           python -m pip install -U pip
           pip install requests Pillow psutil
           if [ -f requirements.txt ]; then
             grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
             pip install -r requirements_linux.txt
           fi
-          
+
       - name: Install OCR Dependencies (Conditional)
         if: env.PERFORM_OCR == 'yes'
         run: |
           echo "Installing OCR dependencies..."
           sudo apt-get install -y \
             tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng
-          
           git clone https://github.com/ocrmypdf/OCRmyPDF.git
           cd OCRmyPDF
           pip install .
           cd ..
           echo "OCR dependencies installed."
-          
+
       - name: Configure Rclone
         env:
           RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
@@ -94,22 +93,18 @@ jobs:
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
           printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
-          
-      - name: Set Upload Destination
+
+      - name: Set Main Upload Destination (for exist-check)
         id: set_destination
         run: |
-          if [[ "${{ env.PERFORM_OCR }}" == "yes" ]]; then
-            echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
-            echo "Upload destination set to: 1drive:/LSC_Books"
-          else
-            echo "RCLONE_DEST_PATH=1drive:/LSC_Books/No_OCR" >> $GITHUB_ENV
-            echo "Upload destination set to: 1drive:/LSC_Books/No_OCR"
-          fi
-          
+          # This path is used by the Python script to check if a book exists
+          echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
+          echo "Main check destination set to: 1drive:/LSC_Books"
+
       - name: Run Intelligent Download Script
         id: download_script
         run: python -u scripts/download_one.py
-        
+
       - name: Read Download Status
         id: status_reader
         if: always()
@@ -121,7 +116,7 @@ jobs:
             echo "DOWNLOAD_STATUS=SCRIPT_ERROR" >> $GITHUB_OUTPUT
           fi
         shell: bash
-        
+
       - name: Sanitize Folder Name
         id: sanitize
         if: hashFiles('folder_name.txt') != ''
@@ -132,7 +127,53 @@ jobs:
             mv -- "$ORIGINAL_NAME" "$SANITIZED_NAME"
           fi
           echo "sanitized_name=$SANITIZED_NAME" >> $GITHUB_OUTPUT
+
+      - name: 'Force PDF Metadata (Pre-OCR Pass)'
+        id: metadata_pass_1
+        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
+        run: |
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          echo "Entering directory to apply metadata (Pass 1): $FOLDER_NAME"
+          cd "$FOLDER_NAME"
+          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
+            echo "Applying LSC metadata to: $pdf_file"
+            exiftool -Title="LSC" \
+                     -Author="LSC" \
+                     -Subject="LSC" \
+                     -Creator="LSC" \
+                     -Producer="LSC" \
+                     -overwrite_original \
+                     "$pdf_file"
+            if [ $? -eq 0 ]; then
+              echo "Metadata update successful for: $pdf_file"
+            else
+              echo "::warning::Metadata update failed for: $pdf_file"
+            fi
+          done
+          echo "Metadata processing (Pass 1) complete."
+          cd ..
+
+      - name: 'Upload Book Folder (No OCR)'
+        id: upload_no_ocr
+        if: steps.metadata_pass_1.conclusion == 'success'
+        env:
+          RCLONE_DEST_PATH: "1drive:/LSC_Books/No_OCR"
+        run: |
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
           
+          echo "Uploading $FOLDER_NAME to $TARGET (No OCR)"
+          rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
+          
+          echo "Creating public link for $TARGET"
+          LINK=$(rclone link "$TARGET")
+          if [ -z "$LINK" ]; then
+            LINK="Không thể tạo link"
+          fi
+          echo "::add-mask::$LINK"
+          echo "RCLONE_LINK_NO_OCR=$LINK" >> $GITHUB_ENV
+        shell: bash
+
       - name: Run OCRmyPDF (Conditional)
         id: ocr
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != '' && env.PERFORM_OCR == 'yes'
@@ -140,7 +181,6 @@ jobs:
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           echo "Entering directory for OCR: $FOLDER_NAME"
           cd "$FOLDER_NAME"
-          
           echo "Finding PDF files for OCR..."
           find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
             echo "---"
@@ -152,7 +192,7 @@ jobs:
               --skip-text \
               "$pdf_file" \
               "$TEMP_OCR_FILE"
-            
+              
             if [ $? -eq 0 ]; then
               echo "OCR successful. Overwriting original file: $pdf_file"
               mv "$TEMP_OCR_FILE" "$pdf_file"
@@ -162,21 +202,18 @@ jobs:
             fi
             echo "---"
           done
-          
           echo "OCR processing complete."
-          
-      - name: 'Force PDF Metadata (All Files)'
-        id: metadata_individual
-        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
+          cd ..
+
+      - name: 'Force PDF Metadata (Post-OCR Pass)'
+        id: metadata_pass_2
+        if: steps.ocr.conclusion == 'success' && env.PERFORM_OCR == 'yes'
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
-          echo "Entering directory to apply metadata: $FOLDER_NAME"
+          echo "Entering directory to apply metadata (Pass 2, Post-OCR): $FOLDER_NAME"
           cd "$FOLDER_NAME"
-          
-          echo "Finding PDF files to update metadata..."
           find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
-            echo "Applying LSC metadata to: $pdf_file"
-            
+            echo "Applying LSC metadata to (Post-OCR): $pdf_file"
             exiftool -Title="LSC" \
                      -Author="LSC" \
                      -Subject="LSC" \
@@ -184,24 +221,20 @@ jobs:
                      -Producer="LSC" \
                      -overwrite_original \
                      "$pdf_file"
-            
-            if [ $? -eq 0 ]; then
-              echo "Metadata update successful for: $pdf_file"
-            else
-              echo "::warning::Metadata update failed for: $pdf_file"
-            fi
           done
-          
-          echo "Metadata processing complete."
+          echo "Metadata processing (Pass 2) complete."
+          cd ..
 
-      - name: 'Upload Book Folder'
-        id: upload_folder
-        if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
+      - name: 'Upload Book Folder (OCR)'
+        id: upload_ocr
+        if: steps.metadata_pass_2.conclusion == 'success' && env.PERFORM_OCR == 'yes'
+        env:
+          RCLONE_DEST_PATH: "1drive:/LSC_Books"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
           
-          echo "Uploading $FOLDER_NAME to $TARGET"
+          echo "Uploading $FOLDER_NAME to $TARGET (OCR)"
           rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
           
           echo "Creating public link for $TARGET"
@@ -210,16 +243,37 @@ jobs:
             LINK="Không thể tạo link"
           fi
           echo "::add-mask::$LINK"
-          echo "RCLONE_LINK=$LINK" >> $GITHUB_ENV
+          echo "RCLONE_LINK_OCR=$LINK" >> $GITHUB_ENV
         shell: bash
-        
-      - name: Update Telegram Message with Link
-        if: steps.upload_folder.outputs.RCLONE_LINK != '' && hashFiles('telegram_message.txt') != ''
+
+      - name: Finalize Telegram Message
+        if: always() && hashFiles('telegram_message.txt') != ''
         run: |
-          LINK="${{ env.RCLONE_LINK }}"
-          sed -i "s|\[Đang xử lý...\]|\[Nhấn vào đây\]($LINK)|g" telegram_message.txt
-          echo "Telegram message updated with final link."
+          LINK_NO_OCR="${{ env.RCLONE_LINK_NO_OCR }}"
+          LINK_OCR="${{ env.RCLONE_LINK_OCR }}"
+          PERFORMED_OCR="${{ env.PERFORM_OCR }}"
           
+          # Replace the main placeholder with the No-OCR link
+          if [ -n "$LINK_NO_OCR" ]; then
+            sed -i "s|\[Đang xử lý...\]|\[Nhấn vào đây\]($LINK_NO_OCR)|g" telegram_message.txt
+            sed -i "s|🔗 Link Tải:|🔗 Link (No-OCR):|g" telegram_message.txt
+          else
+            # This means the first upload failed or didn't run.
+            sed -i "s|\[Đang xử lý...\]|\[Upload thất bại\]|g" telegram_message.txt
+            sed -i "s|🔗 Link Tải:|🔗 Link (No-OCR):|g" telegram_message.txt
+          fi
+          
+          # Add the OCR link if it was performed and exists
+          if [ "$PERFORMED_OCR" == "yes" ]; then
+            if [ -n "$LINK_OCR" ]; then
+              echo "🔗 Link (OCR): [Nhấn vào đây]($LINK_OCR)" >> telegram_message.txt
+            else
+              echo "🔗 Link (OCR): [Upload thất bại]" >> telegram_message.txt
+            fi
+          fi
+          
+          echo "Telegram message finalized."
+
       - name: Upload Result Message
         if: success() && hashFiles('telegram_message.txt') != ''
         uses: actions/upload-artifact@v4
