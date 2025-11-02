@@ -73,13 +73,13 @@ jobs:
         run: |
           cd workspace
           echo "Starting OCR for: ${{ env.PDF_FILE }}..."
-          echo "Forcing re-OCR and outputting standard PDF (non-PDF/A)..."
+          echo "Skipping pages with existing text, and outputting standard PDF..."
 
           TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
 
           ocrmypdf \
             --language "vie+eng" \
-            --force-ocr \
+            --skip-text \
             --output-type pdf \
             "${{ env.PDF_FILE }}" \
             "$TEMP_OCR_FILE"
