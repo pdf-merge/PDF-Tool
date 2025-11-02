@@ -70,33 +70,42 @@ jobs:
           echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
           echo "TARGET_DIR_NAME=$TARGET_DIR_NAME" >> $GITHUB_ENV
 
-      - name: 4. Run OCRmyPDF on each file (Sequential)
+      - name: 4. Run OCRmyPDF on each file (Skip if already OCR'd)
         run: |
           cd downloads
-          echo "Starting OCR for all downloaded PDF files (sequentially)..."
+          echo "Starting OCR for all downloaded PDF files (skipping if text exists)..."
           
-          # Lấy danh sách file theo thứ tự ls -v (thứ tự tự nhiên)
           mapfile -t pdf_files < <(ls -v *.pdf)
 
           for f in "${pdf_files[@]}"; do
-            echo "Processing OCR for: $f"
+            echo "Processing: $f"
             TEMP_OCR_FILE="ocr_${f}"
             
+            # Đã xóa --force-ocr
             # OCRmyPDF sẽ tự động dùng nhiều lõi (CPU)
-            # để xử lý song song các trang bên trong file này.
             ocrmypdf \
               --language "vie+eng" \
-              --force-ocr \
               "$f" \
               "$TEMP_OCR_FILE"
             
-            if [ $? -ne 0 ]; then 
-              echo "::error::OCRmyPDF failed for file: $f"
+            # Lấy mã thoát (exit code)
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -eq 0 ]; then
+              # 0 = Thành công, file đã được OCR
+              mv "$TEMP_OCR_FILE" "$f"
+              echo "✅ OCR complete for: $f"
+            elif [ $EXIT_CODE -eq 6 ]; then
+              # 6 = Đã có text, ocrmypdf không làm gì cả
+              echo "⏭️ Skipping OCR for: $f (already has text)"
+              # Không cần làm gì, file gốc $f được giữ nguyên
+              rm -f "$TEMP_OCR_FILE" # Xóa file temp rỗng nếu có
+            else
+              # Bất kỳ mã nào khác là lỗi
+              echo "::error::OCRmyPDF failed for file: $f (Exit code: $EXIT_CODE)"
               exit 1 # Thoát ngay nếu có lỗi
             fi
             
-            mv "$TEMP_OCR_FILE" "$f"
-            echo "✅ OCR complete for: $f"
           done
 
           echo "All files have been processed."
