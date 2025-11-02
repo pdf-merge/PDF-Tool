@@ -81,16 +81,21 @@ jobs:
             echo "Processing: $f"
             TEMP_OCR_FILE="ocr_${f}"
             
-            # Đã xóa --force-ocr
-            # OCRmyPDF sẽ tự động dùng nhiều lõi (CPU)
+            # --- FIX ---
+            # Tạm thời tắt 'set -e' để chúng ta có thể bắt mã thoát 6
+            set +e 
             ocrmypdf \
               --language "vie+eng" \
               "$f" \
               "$TEMP_OCR_FILE"
             
-            # Lấy mã thoát (exit code)
+            # Lấy mã thoát (exit code) ngay lập tức
             EXIT_CODE=$?
             
+            # Bật lại 'set -e' cho các lệnh còn lại
+            set -e 
+            # --- END FIX ---
+
             if [ $EXIT_CODE -eq 0 ]; then
               # 0 = Thành công, file đã được OCR
               mv "$TEMP_OCR_FILE" "$f"
@@ -98,7 +103,6 @@ jobs:
             elif [ $EXIT_CODE -eq 6 ]; then
               # 6 = Đã có text, ocrmypdf không làm gì cả
               echo "⏭️ Skipping OCR for: $f (already has text)"
-              # Không cần làm gì, file gốc $f được giữ nguyên
               rm -f "$TEMP_OCR_FILE" # Xóa file temp rỗng nếu có
             else
               # Bất kỳ mã nào khác là lỗi
