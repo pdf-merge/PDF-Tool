@@ -73,20 +73,22 @@ jobs:
         run: |
           cd workspace
           echo "Starting OCR for: ${{ env.PDF_FILE }}..."
-          
+          echo "Forcing re-OCR and outputting standard PDF (non-PDF/A)..."
+
           TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
-          
+
           ocrmypdf \
             --language "vie+eng" \
-            --skip-text \
+            --force-ocr \
+            --output-type pdf \
             "${{ env.PDF_FILE }}" \
             "$TEMP_OCR_FILE"
-            
+
           if [ $? -ne 0 ]; then 
-            echo "::error::OCRmyPDF command failed"
+             echo "::error::OCRmyPDF command failed"
             exit 1
           fi
-          
+
           echo "✅ OCR complete. Overwriting original PDF..."
           mv "$TEMP_OCR_FILE" "${{ env.PDF_FILE }}"
 
