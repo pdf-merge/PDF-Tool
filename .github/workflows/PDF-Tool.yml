@@ -82,9 +82,10 @@ jobs:
             echo "Processing OCR for: $f"
             TEMP_OCR_FILE="ocr_${f}"
             
+            # --- MODIFIED: Changed --skip-text to --force-ocr ---
             ocrmypdf \
               --language "vie+eng" \
-              --skip-text \
+              --force-ocr \
               "$f" \
               "$TEMP_OCR_FILE"
             
@@ -107,7 +108,7 @@ jobs:
           
           echo "All files have been processed."
 
-      - name: 5. Merge and Create Bookmarks (pdftk)
+      - name: 5. Merge and Create Nested Bookmarks (pdftk)
         run: |
           cd downloads
           BOOKMARK_FILE="bookmarks.txt"
@@ -123,18 +124,45 @@ jobs:
               if [ "$f" == "$MERGED_TEMP_FILE" ] || [ "$f" == "$FINAL_FILE" ]; then
                   continue
               fi
+              
+              # --- MODIFIED: This section now nests original bookmarks ---
               TITLE_TEMP=$(echo "$f" | sed 's/\.pdf$//')
               TITLE=$(echo "$TITLE_TEMP" | sed 's/^[0-9]*_//')
+              
+              echo "Creating Level 1 bookmark for: $TITLE (Page $PAGE_COUNT)"
               echo "BookmarkBegin" >> "$BOOKMARK_FILE"
               echo "BookmarkTitle: $TITLE" >> "$BOOKMARK_FILE"
               echo "BookmarkLevel: 1" >> "$BOOKMARK_FILE"
               echo "BookmarkPageNumber: $PAGE_COUNT" >> "$BOOKMARK_FILE"
+              
+              # Dump existing bookmarks, increment their level, and adjust page numbers
+              echo "Dumping and nesting original bookmarks from $f..."
+              OFFSET=$((PAGE_COUNT - 1))
+              pdftk "$f" dump_data | \
+                grep -E "^(BookmarkBegin|BookmarkTitle|BookmarkLevel|BookmarkPageNumber)" | \
+                awk -v offset="$OFFSET" '
+                  {
+                    if ($1 == "BookmarkLevel:") {
+                      print "BookmarkLevel: " ($2 + 1)
+                    } else if ($1 == "BookmarkPageNumber:") {
+                      print "BookmarkPageNumber: " ($2 + offset)
+                    } else {
+                      print
+                    }
+                  }
+                ' >> "$BOOKMARK_FILE"
+              # --- END OF MODIFICATION ---
+                
               CURRENT_PAGES=$(pdftk "$f" dump_data | grep NumberOfPages | awk '{print $2}')
               PAGE_COUNT=$((PAGE_COUNT + CURRENT_PAGES))
           done
           
+          echo "Merging all PDF files..."
           pdftk "${pdf_files[@]}" cat output "$MERGED_TEMP_FILE"
+          
+          echo "Applying new nested bookmarks..."
           pdftk "$MERGED_TEMP_FILE" update_info "$BOOKMARK_FILE" output "$FINAL_FILE"
+          
           rm "$MERGED_TEMP_FILE" "$BOOKMARK_FILE"
           echo "Merge and bookmark complete. Final file: $FINAL_FILE"
 
@@ -181,4 +209,3 @@ jobs:
         with:
           name: bot-message
           path: downloads/artifact.txt
-
