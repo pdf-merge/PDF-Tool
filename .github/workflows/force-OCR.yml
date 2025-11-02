@@ -1,4 +1,4 @@
-name: Outline + OCR (from Source)
+name: Outline + FORCE OCR
 
 on:
   workflow_dispatch:
