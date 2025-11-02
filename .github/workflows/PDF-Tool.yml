@@ -7,23 +7,16 @@ on:
         description: 'Folder prefix (e.g., 107)'
         required: true
         type: string
-      parallel_jobs:
-        description: 'Number of parallel OCR jobs'
-        required: false
-        type: string
-        default: '4'
 
 jobs:
   merge-pdfs:
     runs-on: ubuntu-latest
     env:
       RCLONE_DEST_PATH: "1drive:LSC_Merged"
-
     steps:
       - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
           sudo apt-get update
-          
           sudo apt-get install -y git
           
           git clone https://github.com/ocrmypdf/OCRmyPDF.git
@@ -35,7 +28,7 @@ jobs:
             ghostscript qpdf \
             tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
             libopenjp2-7 libffi-dev libssl-dev
-          
+            
           cd OCRmyPDF
           echo "Installing OCRmyPDF from source code..."
           pip install .
@@ -53,18 +46,23 @@ jobs:
           mkdir -p downloads
           echo "Searching for directory with prefix: $FOLDER_PREFIX"
           TARGET_DIR_NAME=$(rclone lsf "1drive:LSC_Books" --dirs-only | grep "^${FOLDER_PREFIX}_" | head -n 1 | sed 's/\/$//')
+          
           if [ -z "$TARGET_DIR_NAME" ]; then
             echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in 1drive:LSC_Books."
             exit 1
           fi
+          
           echo "Found target directory: $TARGET_DIR_NAME"
           RCLONE_REMOTE_PATH="1drive:LSC_Books/$TARGET_DIR_NAME"
+          
           echo "Starting download from $RCLONE_REMOTE_PATH..."
           rclone copy "$RCLONE_REMOTE_PATH" ./downloads/ --include "*.pdf"
+          
           if [ -z "$(ls -A downloads/*.pdf 2>/dev/null)" ]; then
             echo "::error::No PDF files found in $TARGET_DIR_NAME."
             exit 1
           fi
+          
           echo "Download complete."
           CLEAN_DIR_NAME=$(echo "$TARGET_DIR_NAME" | tr ' ' '_')
           FINAL_FILE_NAME="${CLEAN_DIR_NAME}.pdf"
@@ -72,17 +70,20 @@ jobs:
           echo "FINAL_FILE_NAME=$FINAL_FILE_NAME" >> $GITHUB_ENV
           echo "TARGET_DIR_NAME=$TARGET_DIR_NAME" >> $GITHUB_ENV
 
-      - name: 4. Run OCRmyPDF on each file (Parallel)
+      - name: 4. Run OCRmyPDF on each file (Sequential)
         run: |
           cd downloads
-          echo "Starting OCR for all downloaded PDF files (using local install in parallel)..."
+          echo "Starting OCR for all downloaded PDF files (sequentially)..."
           
-          run_ocr() {
-            f="$1"
+          # Lấy danh sách file theo thứ tự ls -v (thứ tự tự nhiên)
+          mapfile -t pdf_files < <(ls -v *.pdf)
+
+          for f in "${pdf_files[@]}"; do
             echo "Processing OCR for: $f"
             TEMP_OCR_FILE="ocr_${f}"
             
-            # --- MODIFIED: Changed --skip-text to --force-ocr ---
+            # OCRmyPDF sẽ tự động dùng nhiều lõi (CPU)
+            # để xử lý song song các trang bên trong file này.
             ocrmypdf \
               --language "vie+eng" \
               --force-ocr \
@@ -91,21 +92,13 @@ jobs:
             
             if [ $? -ne 0 ]; then 
               echo "::error::OCRmyPDF failed for file: $f"
-              return 1
+              exit 1 # Thoát ngay nếu có lỗi
             fi
             
             mv "$TEMP_OCR_FILE" "$f"
             echo "✅ OCR complete for: $f"
-          }
-          export -f run_ocr
-          
-          ls -v *.pdf | parallel -j ${{ inputs.parallel_jobs }} --halt now,fail=1 run_ocr {}
-          
-          if [ $? -ne 0 ]; then 
-            echo "::error::Parallel OCR processing failed."
-            exit 1
-          fi
-          
+          done
+
           echo "All files have been processed."
 
       - name: 5. Merge and Create Nested Bookmarks (pdftk)
@@ -152,7 +145,7 @@ jobs:
                   }
                 ' >> "$BOOKMARK_FILE"
               # --- END OF MODIFICATION ---
-                
+              
               CURRENT_PAGES=$(pdftk "$f" dump_data | grep NumberOfPages | awk '{print $2}')
               PAGE_COUNT=$((PAGE_COUNT + CURRENT_PAGES))
           done
