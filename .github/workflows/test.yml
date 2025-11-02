@@ -1,0 +1,142 @@
+name: Outline + OCR (from Source)
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder_name:
+        description: 'Folder name inside 1drive:LSC_Books/ADD/'
+        required: true
+        type: string
+
+jobs:
+  add-outline:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_PATH: "1drive:LSC_Books/ADD/${{ inputs.folder_name }}"
+      DEST_PATH: "1drive:LSC_Merged"
+      
+    steps:
+      - name: 1. Install Dependencies & OCRmyPDF from Source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git
+          git clone https://github.com/ocrmypdf/OCRmyPDF.git
+          
+          echo "Installing dependencies (rclone, pdftk, exiftool, ocrmypdf)..."
+          sudo apt-get install -y \
+            rclone pdftk-java exiftool \
+            python3-pip python3-dev \
+            ghostscript qpdf \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+            libopenjp2-7 libffi-dev libssl-dev
+            
+          cd OCRmyPDF
+          echo "Installing OCRmyPDF from source code..."
+          pip install .
+          echo "OCRmyPDF successfully installed from source."
+      - name: 2. Configure Rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+      - name: 3. Download Files and Check Outline
+        run: |
+          mkdir -p workspace
+          cd workspace
+          
+          echo "Downloading files from $SOURCE_PATH"
+          rclone copy "$SOURCE_PATH" . --include "*.pdf" --include "*.txt"
+          if [ $? -ne 0 ]; then echo "::error::Failed to download files from $SOURCE_PATH"; exit 1; fi
+          
+          PDF_FILE=$(ls *.pdf | head -n 1)
+          TXT_FILE=$(ls *.txt | head -n 1)
+          
+          if [ -z "$PDF_FILE" ]; then
+            echo "::error::No .pdf file found in $SOURCE_PATH"
+            exit 1
+          fi
+          
+          echo "PDF_FILE=$PDF_FILE" >> $GITHUB_ENV
+          echo "OUTPUT_FILE=${{ inputs.folder_name }}.pdf" >> $GITHUB_ENV
+          
+          if [ -z "$TXT_FILE" ]; then
+            echo "::warning::No .txt outline file found. Skipping outline step."
+            echo "OUTLINE_EXISTS=false" >> $GITHUB_ENV
+          else
+            echo "Found outline file: $TXT_FILE"
+            echo "TXT_FILE=$TXT_FILE" >> $GITHUB_ENV
+            echo "OUTLINE_EXISTS=true" >> $GITHUB_ENV
+          fi
+      - name: 4. Run OCR
+        run: |
+          cd workspace
+          echo "Starting OCR for: ${{ env.PDF_FILE }}..."
+          echo "Forcing re-OCR by removing old text layer..." # Thêm log cho rõ ràng
+
+          TEMP_OCR_FILE="ocr_${{ env.PDF_FILE }}"
+
+          ocrmypdf \
+            --language "vie+eng" \
+            --force-ocr \
+            "${{ env.PDF_FILE }}" \
+            "$TEMP_OCR_FILE"
+
+          if [ $? -ne 0 ]; then 
+             echo "::error::OCRmyPDF command failed"
+            exit 1
+          fi
+
+          echo "✅ OCR complete. Overwriting original PDF..."
+          mv "$TEMP_OCR_FILE" "${{ env.PDF_FILE }}"
+          
+      - name: 5. Apply Outline (if found)
+        if: env.OUTLINE_EXISTS == 'true'
+        run: |
+          cd workspace
+          echo "Applying outline ${{ env.TXT_FILE }} to ${{ env.PDF_FILE }}..."
+          pdftk "${{ env.PDF_FILE }}" update_info "${{ env.TXT_FILE }}" output "${{ env.OUTPUT_FILE }}"
+          if [ $? -ne 0 ]; then echo "::error::pdftk command failed"; exit 1; fi
+          echo "Outline applied successfully."
+      - name: 5b. Finalize PDF (if no outline)
+        if: env.OUTLINE_EXISTS == 'false'
+        run: |
+          cd workspace
+          echo "No outline file. Renaming OCR'd file to final output name."
+          mv "${{ env.PDF_FILE }}" "${{ env.OUTPUT_FILE }}"
+      - name: 6. Force PDF Metadata
+        run: |
+          cd workspace
+          echo "Forcing metadata update for ${{ env.OUTPUT_FILE }}..."
+          exiftool -Title="LSC" \
+                   -Author="LSC" \
+                   -Subject="LSC" \
+                   -Creator="LSC" \
+                   -Producer="LSC" \
+                   -overwrite_original \
+                   "${{ env.OUTPUT_FILE }}"
+          echo "Metadata update complete."
+      - name: 7. Upload Result
+        run: |
+          cd workspace
+          echo "Uploading ${{ env.OUTPUT_FILE }} to $DEST_PATH..."
+          rclone copy "${{ env.OUTPUT_FILE }}" "$DEST_PATH"
+          if [ $? -ne 0 ]; then echo "::error::Failed to upload new PDF"; exit 1; fi
+          echo "Upload complete."
+      - name: 8. Create Artifact for Bot
+        run: |
+          cd workspace
+          NEW_LINK=$(rclone link "$DEST_PATH/${{ env.OUTPUT_FILE }}")
+          BOOK_NAME=$(echo "${{ inputs.folder_name }}" | tr '_' ' ')
+          
+          if [ "${{ env.OUTLINE_EXISTS }}" == "true" ]; then
+            echo "✅ *OCR & Thêm Outline Thành Công*\n\n" > artifact.txt
+          else
+            echo "✅ *OCR Thành Công (Không tìm thấy outline.txt)*\n\n" > artifact.txt
+          fi
+          
+          echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
+          echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
+      - name: 9. Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-message
+          path: workspace/artifact.txt
