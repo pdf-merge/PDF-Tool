@@ -1,6 +1,6 @@
 name: Delete All Workflow Runs
 
-on: 
+on:
   workflow_dispatch:
     inputs:
       auth_key:
@@ -17,10 +17,15 @@ jobs:
 
     steps:
       - name: Authenticate Request
-        if: ${{ github.event.inputs.auth_key != secrets.Auth_key_del }}
+        env:
+          AUTH_KEY_INPUT: ${{ github.event.inputs.auth_key }}
+          AUTH_KEY_SECRET: ${{ secrets.Auth_key_del }}
         run: |
-          echo "::error::Invalid authentication key. Aborting deletion."
-          exit 1
+          if [ "$AUTH_KEY_INPUT" != "$AUTH_KEY_SECRET" ]; then
+            echo "::error::Invalid authentication key. Aborting deletion."
+            exit 1
+          fi
+          echo "Authentication successful"
 
       - name: Delete All Workflow Runs
         uses: Mattraks/delete-workflow-runs@v2
