@@ -1,6 +1,6 @@
 name: Delete All Workflow Runs
 
-on:
+on: 
   workflow_dispatch:
     inputs:
       auth_key:
