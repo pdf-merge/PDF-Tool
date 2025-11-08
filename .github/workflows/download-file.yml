@@ -95,8 +95,11 @@ jobs:
           -d "text=Uploading: \`${{ steps.parse.outputs.final_name }}\`" \
           -d "parse_mode=Markdown"
           
-          echo "Uploading to rclone remote..."
-          rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" --progress
+          echo "Uploading to rclone remote"
+          rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
+            --multi-thread-streams=32 \
+            --multi-thread-cutoff=32M \
+            --stats=20s
 
       - name: Send Success Notification
         if: success()
