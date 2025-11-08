@@ -17,7 +17,7 @@ on:
       ONEDRIVE_PATH:
         description: 'Folder path on OneDrive'
         required: true
-        default: 'Mirror/'
+        default: 'Mirror'
 
 jobs:
   build:
@@ -34,7 +34,7 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone unzip
+          sudo apt-get install -y rclone unzip aria2
 
       - name: Configure rclone
         env:
@@ -51,8 +51,8 @@ jobs:
       - name: Download, Parse Name, and Rename
         id: parse
         run: |
-          echo "Starting download as ${{ inputs.TEMP_FILE_NAME }}..."
-          wget -q --show-progress --progress=bar:force -O "${{ inputs.TEMP_FILE_NAME }}" "${{ inputs.DOWNLOAD_URL }}"
+          echo "Starting accelerated download as ${{ inputs.TEMP_FILE_NAME }}..."
+          aria2c -x 16 -s 16 -o "${{ inputs.TEMP_FILE_NAME }}" "${{ inputs.DOWNLOAD_URL }}"
           
           echo "Attempting to extract and parse metadata..."
           unzip -p "${{ inputs.TEMP_FILE_NAME }}" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
