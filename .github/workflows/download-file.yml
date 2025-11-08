@@ -97,8 +97,8 @@ jobs:
           
           echo "Uploading to rclone remote"
           rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
-            --multi-thread-streams=32 \
-            --multi-thread-cutoff=32M \
+            --multi-thread-streams=16 \
+            --multi-thread-cutoff=16M \
             --stats=20s
 
       - name: Send Success Notification
