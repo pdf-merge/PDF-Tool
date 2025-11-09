@@ -15,7 +15,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
-      message_id: ${{ steps.send_initial.outputs.message_id }}
       final_name: ${{ steps.parse.outputs.final_name }}
       status: ${{ job.status }}
     
@@ -67,7 +66,6 @@ jobs:
           echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
 
       - name: Send Initial Telegram Message
-        id: send_initial
         uses: appleboy/telegram-action@master
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -77,20 +75,15 @@ jobs:
             `${{ steps.parse.outputs.final_name }}`
           format: markdown
 
-      - name: Upload and Update Message
-        id: upload
+      - name: Upload to Google Drive
         run: |
-          echo "Updating Telegram message to 'Uploading'..."
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-          -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-          -d "message_id=${{ steps.send_initial.outputs.message_id }}" \
-          -d "text=Uploading to GDrive: \`${{ steps.parse.outputs.final_name }}\`" \
-          -d "parse_mode=Markdown"
-          
-          echo "Uploading to rclone remote (Google Drive)"
+          echo "Uploading to rclone remote (Google Drive) with 10MB/s limit"
           rclone copy "${{ steps.parse.outputs.final_name }}" "gdrive1:VS_Stock" \
             --drive-chunk-size=64M \
-            --stats=20s
+            --transfers=4 \
+            --checkers=4 \
+            --bwlimit=10M \
+            --stats=10s
 
       - name: Send Success Notification
         if: success()
@@ -98,7 +91,6 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message_id: ${{ steps.send_initial.outputs.message_id }}
           message: |
             ✅ Upload Successful!
             
@@ -117,7 +109,6 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message_id: ${{ needs.build.outputs.message_id }}
           message: |
             ❌ Upload FAILED!
             
