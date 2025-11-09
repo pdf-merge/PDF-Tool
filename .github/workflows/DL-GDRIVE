@@ -1,0 +1,125 @@
+name: DL-GDRIVE
+
+on:
+  workflow_dispatch:
+    inputs:
+      DOWNLOAD_URL:
+        description: 'Direct Download Link (to .zip file)'
+        required: true
+      TEMP_FILE_NAME:
+        description: 'Temporary/Default name (e.g., download.zip)'
+        required: true
+        default: 'download.zip'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      message_id: ${{ steps.send_initial.outputs.message_id }}
+      final_name: ${{ steps.parse.outputs.final_name }}
+      status: ${{ job.status }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone unzip aria2
+
+      - name: Configure rclone
+        env:
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: Mask Remote Info in Logs
+        run: |
+          echo "::add-mask::gdrive1"
+          echo "::add-mask::VS_Stock"
+
+      - name: Download, Parse Name, and Rename
+        id: parse
+        run: |
+          echo "Starting accelerated download as ${{ inputs.TEMP_FILE_NAME }}..."
+          aria2c -x 16 -s 16 -o "${{ inputs.TEMP_FILE_NAME }}" "${{ inputs.DOWNLOAD_URL }}"
+          
+          echo "Attempting to extract and parse metadata..."
+          unzip -p "${{ inputs.TEMP_FILE_NAME }}" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
+          
+          if [ -s metadata_line.txt ]; then
+              BASE_NAME=$(cat metadata_line.txt | sed -n 's/version_name_show=\(.*\)(.*)/\1/p')
+          else
+              BASE_NAME=""
+          fi
+          
+          if [ -n "$BASE_NAME" ]; then
+              FINAL_NAME="${BASE_NAME}.zip"
+              echo "Successfully parsed name. Renaming to: $FINAL_NAME"
+              mv "${{ inputs.TEMP_FILE_NAME }}" "$FINAL_NAME"
+          else
+              FINAL_NAME="${{ inputs.TEMP_FILE_NAME }}"
+              echo "Warning: Could not parse metadata. Using default name: $FINAL_NAME"
+          fi
+          
+          echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
+
+      - name: Send Initial Telegram Message
+        id: send_initial
+        uses: appleboy/telegram-action@master
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: |
+            Processing file:
+            `${{ steps.parse.outputs.final_name }}`
+          format: markdown
+
+      - name: Upload and Update Message
+        id: upload
+        run: |
+          echo "Updating Telegram message to 'Uploading'..."
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
+          -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+          -d "message_id=${{ steps.send_initial.outputs.message_id }}" \
+          -d "text=Uploading to GDrive: \`${{ steps.parse.outputs.final_name }}\`" \
+          -d "parse_mode=Markdown"
+          
+          echo "Uploading to rclone remote (Google Drive)"
+          rclone copy "${{ steps.parse.outputs.final_name }}" "gdrive1:VS_Stock" \
+            --drive-chunk-size=64M \
+            --stats=20s
+
+      - name: Send Success Notification
+        if: success()
+        uses: appleboy/telegram-action@master
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message_id: ${{ steps.send_initial.outputs.message_id }}
+          message: |
+            ✅ Upload Successful!
+            
+            File: `${{ steps.parse.outputs.final_name }}`
+            Destination: `gdrive1:VS_Stock`
+          format: markdown
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.status == 'failure'
+    
+    steps:
+      - name: Send Failure Notification
+        uses: appleboy/telegram-action@master
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message_id: ${{ needs.build.outputs.message_id }}
+          message: |
+            ❌ Upload FAILED!
+            
+            File: `${{ needs.build.outputs.final_name || inputs.TEMP_FILE_NAME }}`
+          format: markdown
