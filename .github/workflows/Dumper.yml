@@ -92,7 +92,7 @@ jobs:
 
           elif [[ "$SOURCE_TYPE" == "onedrive" ]]; then
             echo "Copying from 1drive1:Mirror/$FILE_PATH"
-            rclone copyto "1drive:Mirror/$FILE_PATH" ./rom.zip $RCLONE_OPTS --onedrive-chunk-size=256M
+            rclone copyto "1drive1:Mirror/$FILE_PATH" ./rom.zip $RCLONE_OPTS --onedrive-chunk-size=256M
 
           elif [[ "$SOURCE_TYPE" == "gdrive" ]]; then
             echo "Copying from gdrive1:VS_Stock/$FILE_PATH"
@@ -142,7 +142,7 @@ jobs:
       
       - name: Upload Dumps and Generate Link
         env:
-          RCLONE_DEST: "1drive:OTA_DUMPS"
+          RCLONE_DEST: "1drive1:OTA_DUMPS"
         run: |
           INCLUDE_FLAGS=""
           if [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "apk_only" ]]; then
