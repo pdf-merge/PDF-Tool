@@ -91,7 +91,7 @@ jobs:
             aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
 
           elif [[ "$SOURCE_TYPE" == "onedrive" ]]; then
-            echo "Copying from 1drive:Mirror/$FILE_PATH"
+            echo "Copying from 1drive1:Mirror/$FILE_PATH"
             rclone copyto "1drive:Mirror/$FILE_PATH" ./rom.zip $RCLONE_OPTS --onedrive-chunk-size=256M
 
           elif [[ "$SOURCE_TYPE" == "gdrive" ]]; then
