@@ -57,8 +57,8 @@ jobs:
         if [ "$(basename "$ORIGINAL_FILENAME")" != "$SANITIZED_BASENAME" ]; then
           mv "$ORIGINAL_FILENAME" "output/$SANITIZED_BASENAME"
         fi
-        rclone copy "output/$SANITIZED_BASENAME" "1drive:Scribd_download" --progress
-        PUBLIC_LINK=$(rclone link "1drive:Scribd_download/$SANITIZED_BASENAME")
+        rclone copy "output/$SANITIZED_BASENAME" "1drive1:Scribd_download" --progress
+        PUBLIC_LINK=$(rclone link "1drive1:Scribd_download/$SANITIZED_BASENAME")
         echo "::add-mask::$PUBLIC_LINK"
         echo "public_link=$PUBLIC_LINK" >> $GITHUB_OUTPUT
 
