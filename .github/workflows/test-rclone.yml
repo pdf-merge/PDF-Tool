@@ -8,7 +8,7 @@ on:
         required: true
         default: 'VS_Stock/'
       destination_path:
-        description: 'Destination OneDrive Path (1drive:)'
+        description: 'Destination OneDrive Path (1drive1:)'
         required: true
         default: 'Mirror'
 
@@ -33,7 +33,7 @@ jobs:
         run: |
           set -o pipefail
           echo "Starting rclone copy from gdrive1:${{ github.event.inputs.source_path }} to 1drive:${{ github.event.inputs.destination_path }}"
-          rclone copy "gdrive1:${{ github.event.inputs.source_path }}" "1drive:${{ github.event.inputs.destination_path }}" \
+          rclone copy "gdrive1:${{ github.event.inputs.source_path }}" "1drive1:${{ github.event.inputs.destination_path }}" \
             --drive-server-side-across-configs=true \
             --transfers 32 \
             --checkers 32 \
