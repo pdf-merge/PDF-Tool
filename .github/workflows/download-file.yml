@@ -1,4 +1,4 @@
-name: DL
+name: DLon
 
 on:
   workflow_dispatch:
@@ -63,16 +63,19 @@ jobs:
               BASE_NAME=""
           fi
           
+          PREFIX=""
           if [ -n "$BASE_NAME" ]; then
               FINAL_NAME="${BASE_NAME}.zip"
               echo "Successfully parsed name. Renaming to: $FINAL_NAME"
               mv "${{ inputs.TEMP_FILE_NAME }}" "$FINAL_NAME"
+              PREFIX=$(echo "$FINAL_NAME" | awk -F'_' '{print $1}')_
           else
               FINAL_NAME="${{ inputs.TEMP_FILE_NAME }}"
               echo "Warning: Could not parse metadata. Using default name: $FINAL_NAME"
           fi
           
           echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
+          echo "prefix=$PREFIX" >> $GITHUB_OUTPUT
 
       - name: Send Initial Telegram Message
         id: send_initial
@@ -84,6 +87,39 @@ jobs:
             Processing file:
             `${{ steps.parse.outputs.final_name }}`
           format: markdown
+
+      - name: Check and Move Old Versions
+        id: check_move
+        if: steps.parse.outputs.prefix != ''
+        env:
+          REMOTE: ${{ inputs.ONEDRIVE_REMOTE }}
+          PATH: ${{ inputs.ONEDRIVE_PATH }}
+          PREFIX: ${{ steps.parse.outputs.prefix }}
+        run: |
+          echo "Checking for existing files with prefix: $PREFIX in $REMOTE:$PATH"
+          EXISTING_FILES=$(rclone lsf "$REMOTE:$PATH" --files-only --include "${PREFIX}*")
+          
+          if [ -n "$EXISTING_FILES" ]; then
+            echo "Found old versions matching prefix '$PREFIX':"
+            echo "$EXISTING_FILES"
+            
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "message_id=${{ steps.send_initial.outputs.message_id }}" \
+            -d "text=Found old version(s). Moving to OLD folder..." \
+            -d "parse_mode=Markdown"
+
+            IFS=$'\n'
+            for FILE in $EXISTING_FILES; do
+              echo "Moving '$FILE' to '$PATH/OLD/'..."
+              rclone move "$REMOTE:$PATH/$FILE" "$REMOTE:$PATH/OLD/"
+            done
+            unset IFS
+            
+            echo "Move complete."
+          else
+            echo "No old versions found. Proceeding to upload."
+          fi
 
       - name: Upload and Update Message
         id: upload
@@ -119,7 +155,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: needs.build.outputs.status == 'failure'
-    
     steps:
       - name: Send Failure Notification
         uses: appleboy/telegram-action@master
@@ -130,5 +165,5 @@ jobs:
           message: |
             ❌ Upload FAILED!
             
-            File: `${{ needs.build.outputs.final_name || inputs.TEMP_FILE_NAME }}`
+            File: `${{ needs.build.outputs.final_name }}`
           format: markdown
