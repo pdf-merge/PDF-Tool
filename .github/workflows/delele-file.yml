@@ -1,4 +1,4 @@
-name: Delete All Workflow Runs
+name: test-work-del-all
 
 on:
   workflow_dispatch:
