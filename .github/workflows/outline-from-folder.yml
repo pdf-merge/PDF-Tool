@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       folder_name:
-        description: 'Folder name inside 1drive1:LSC_Books/ADD/'
+        description: 'Folder name inside 1drive:LSC_Books/ADD/'
         required: true
         type: string
 
@@ -12,8 +12,8 @@ jobs:
   add-outline:
     runs-on: ubuntu-latest
     env:
-      SOURCE_PATH: "1drive1:LSC_Books/ADD/${{ inputs.folder_name }}"
-      DEST_PATH: "1drive1:LSC_Merged"
+      SOURCE_PATH: "1drive:LSC_Books/ADD/${{ inputs.folder_name }}"
+      DEST_PATH: "1drive:LSC_Merged"
       
     steps:
       - name: 1. Install Dependencies & OCRmyPDF from Source
