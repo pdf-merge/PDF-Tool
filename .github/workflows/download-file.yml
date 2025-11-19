@@ -30,7 +30,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Tools (Absolute Path Fix)
+      - name: Install Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip aria2
@@ -44,7 +44,7 @@ jobs:
           
           sudo ln -sf /usr/local/bin/rclone /usr/bin/rclone
           
-          /usr/local/bin/rclone version
+          rclone version
 
       - name: Configure rclone
         env:
@@ -103,97 +103,9 @@ jobs:
             `${{ steps.parse.outputs.final_name }}`
           format: markdown
 
-      - name: Check if File Already Exists
-        id: check_duplicate
-        env:
-          REMOTE: ${{ inputs.ONEDRIVE_REMOTE }}
-          PATH: ${{ inputs.ONEDRIVE_PATH }}
-          FILENAME: ${{ steps.parse.outputs.final_name }}
-        run: |
-          RCLONE="/usr/local/bin/rclone"
-          
-          echo "Checking for exact duplicate: $FILENAME in $REMOTE:$PATH"
-          
-          if ! "$RCLONE" version > /dev/null 2>&1; then
-             echo "CRITICAL ERROR: Cannot execute rclone at $RCLONE"
-             exit 1
-          fi
-
-          if DUPLICATE_CHECK=$("$RCLONE" lsf "$REMOTE:$PATH" --files-only --include "$FILENAME"); then
-              echo "List command successful."
-          else
-              echo "ERROR: Failed to list files on remote. Check configuration."
-              exit 1
-          fi
-          
-          DUPLICATE_CHECK=$(echo "$DUPLICATE_CHECK" | xargs)
-
-          if [[ -n "$DUPLICATE_CHECK" ]]; then
-            echo "❌ DETECTED DUPLICATE: $DUPLICATE_CHECK"
-            echo "Aborting process..."
-            
-            MSG_ID="${{ steps.send_initial.outputs.message_id }}"
-            if [[ -n "$MSG_ID" ]]; then
-                curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-                -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-                -d "message_id=$MSG_ID" \
-                -d "text=⛔ **Upload Aborted!**%0A%0AFile \`$FILENAME\` already exists in Destination." \
-                -d "parse_mode=Markdown"
-            fi
-            exit 1
-          else
-            echo "✅ No duplicate found. Proceeding."
-          fi
-
-      - name: Check and Move Old Versions
-        id: check_move
-        if: steps.parse.outputs.prefix != ''
-        env:
-          REMOTE: ${{ inputs.ONEDRIVE_REMOTE }}
-          PATH: ${{ inputs.ONEDRIVE_PATH }}
-          PREFIX: ${{ steps.parse.outputs.prefix }}
-          CURRENT_FILE: ${{ steps.parse.outputs.final_name }}
-        run: |
-          RCLONE="/usr/local/bin/rclone"
-          
-          echo "Scanning for existing files with prefix: $PREFIX"
-          
-          EXISTING_FILES=$("$RCLONE" lsf "$REMOTE:$PATH" --files-only --include "${PREFIX}*" || true)
-          
-          if [[ -n "$EXISTING_FILES" ]]; then
-            echo "⚠️ Found potential old versions. Processing..."
-            
-            MSG_ID="${{ steps.send_initial.outputs.message_id }}"
-            if [[ -n "$MSG_ID" ]]; then
-                curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-                -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-                -d "message_id=$MSG_ID" \
-                -d "text=Found old version(s). Moving to OLD folder..." \
-                -d "parse_mode=Markdown"
-            fi
-
-            echo "$EXISTING_FILES" | while IFS= read -r FILE; do
-                if [[ -z "$FILE" ]]; then continue; fi
-                
-                if [[ "$FILE" == "$CURRENT_FILE" ]]; then 
-                    echo "Skipping current file: $FILE"
-                    continue 
-                fi
-                
-                echo "🚀 Moving '$FILE' to '$PATH/OLD/'..."
-                "$RCLONE" move "$REMOTE:$PATH/$FILE" "$REMOTE:$PATH/OLD/" --verbose
-            done
-            
-            echo "✅ Move complete."
-          else
-            echo "✅ No old versions found. Clean upload."
-          fi
-
       - name: Upload and Update Message
         id: upload
         run: |
-          RCLONE="/usr/local/bin/rclone"
-          
           echo "Updating Telegram message to 'Uploading'..."
           MSG_ID="${{ steps.send_initial.outputs.message_id }}"
           
@@ -205,10 +117,10 @@ jobs:
               -d "parse_mode=Markdown"
           fi
           
-          echo "Uploading to rclone remote"
-          "$RCLONE" copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
-            --multi-thread-streams=16 \
-            --multi-thread-cutoff=16M \
+          echo "Uploading to rclone remote..."
+          /usr/local/bin/rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
+            --multi-thread-streams=32 \
+            --multi-thread-cutoff=32M \
             --stats=10s
 
       - name: Send Success Notification
@@ -235,7 +147,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
-            ❌ Upload FAILED / ABORTED!
+            ❌ Upload FAILED!
             
-            Reason: Error occurred or Duplicate file detected.
+            Reason: Check logs for details.
           format: markdown
