@@ -1,4 +1,4 @@
-name: DL OTA FILE
+name: DL OTA FILE 
 
 on:
   workflow_dispatch:
@@ -25,23 +25,22 @@ jobs:
     outputs:
       message_id: ${{ steps.send_initial.outputs.message_id }}
       final_name: ${{ steps.parse.outputs.final_name }}
-      status: ${{ job.status }}
     
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Tools (Hardcore Fix)
+      - name: Install Tools 
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip aria2
           curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
           unzip rclone-current-linux-amd64.zip
           cd rclone-*-linux-amd64
-          sudo cp rclone /usr/bin/
-          sudo chown root:root /usr/bin/rclone
-          sudo chmod 755 /usr/bin/rclone
-          which rclone
+          sudo cp rclone /usr/local/bin/
+          sudo chown root:root /usr/local/bin/rclone
+          sudo chmod +x /usr/local/bin/rclone          
+          echo "Rclone version installed:"
           rclone version
 
       - name: Configure rclone
@@ -108,12 +107,8 @@ jobs:
           PATH: ${{ inputs.ONEDRIVE_PATH }}
           FILENAME: ${{ steps.parse.outputs.final_name }}
         run: |
-          if ! command -v rclone &> /dev/null; then
-              echo "ERROR: rclone command not found!"
-              exit 1
-          fi
-
           echo "Checking for exact duplicate: $FILENAME in $REMOTE:$PATH"
+          
           DUPLICATE_CHECK=$(rclone lsf "$REMOTE:$PATH" --files-only --include "$FILENAME" || true)
           
           if [ -n "$DUPLICATE_CHECK" ]; then
@@ -144,7 +139,7 @@ jobs:
           EXISTING_FILES=$(rclone lsf "$REMOTE:$PATH" --files-only --include "${PREFIX}*" || true)
           
           if [ -n "$EXISTING_FILES" ]; then
-            echo "Found old versions matching prefix '$PREFIX':"
+            echo "Found old versions matching prefix matched '$PREFIX':"
             echo "$EXISTING_FILES"
             
             MSG_ID="${{ steps.send_initial.outputs.message_id }}"
@@ -160,6 +155,8 @@ jobs:
 
             IFS=$'\n'
             for FILE in $EXISTING_FILES; do
+              if [ "$FILE" == "${{ steps.parse.outputs.final_name }}" ]; then continue; fi
+              
               echo "Moving '$FILE' to '$PATH/OLD/'..."
               rclone move "$REMOTE:$PATH/$FILE" "$REMOTE:$PATH/OLD/" --verbose
             done
@@ -188,7 +185,7 @@ jobs:
           rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
             --multi-thread-streams=16 \
             --multi-thread-cutoff=16M \
-            --stats=20s
+            --stats=10s
 
       - name: Send Success Notification
         if: success()
@@ -206,7 +203,7 @@ jobs:
   notify_failure:
     runs-on: ubuntu-latest
     needs: build
-    if: needs.build.outputs.status == 'failure'
+    if: always() && needs.build.result == 'failure'
     steps:
       - name: Send Failure Notification
         uses: appleboy/telegram-action@master
@@ -216,5 +213,5 @@ jobs:
           message: |
             ❌ Upload FAILED / ABORTED!
             
-            Reason: Error or Duplicate file detected.
+            Reason: Error occurred or Duplicate file detected.
           format: markdown
