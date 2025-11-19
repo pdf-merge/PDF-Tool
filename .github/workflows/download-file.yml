@@ -1,4 +1,4 @@
-name: DLon
+name: DL
 
 on:
   workflow_dispatch:
