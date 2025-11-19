@@ -1,4 +1,4 @@
-name: DL
+name: DLon
 
 on:
   workflow_dispatch:
@@ -34,7 +34,12 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone unzip aria2
+          sudo apt-get install -y unzip aria2
+          # Dùng script chính thức để cài bản rclone mới nhất và link vào /usr/bin/rclone
+          curl https://rclone.org/install.sh | sudo bash
+          # Kiểm tra version ngay lập tức để đảm bảo rclone đã chạy được
+          echo "Verifying rclone installation..."
+          rclone version
 
       - name: Configure rclone
         env:
@@ -55,7 +60,13 @@ jobs:
           aria2c -x 16 -s 16 -o "${{ inputs.TEMP_FILE_NAME }}" "${{ inputs.DOWNLOAD_URL }}"
           
           echo "Attempting to extract and parse metadata..."
-          unzip -p "${{ inputs.TEMP_FILE_NAME }}" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
+          # Kiểm tra an toàn xem file zip có hợp lệ không
+          if unzip -l "${{ inputs.TEMP_FILE_NAME }}" | grep -q "META-INF/com/android/metadata"; then
+              unzip -p "${{ inputs.TEMP_FILE_NAME }}" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
+          else
+              echo "Metadata file not found inside zip."
+              echo "" > metadata_line.txt
+          fi
           
           if [ -s metadata_line.txt ]; then
               BASE_NAME=$(cat metadata_line.txt | sed -n 's/version_name_show=\(.*\)(.*)/\1/p')
@@ -97,22 +108,30 @@ jobs:
           PREFIX: ${{ steps.parse.outputs.prefix }}
         run: |
           echo "Checking for existing files with prefix: $PREFIX in $REMOTE:$PATH"
-          EXISTING_FILES=$(rclone lsf "$REMOTE:$PATH" --files-only --include "${PREFIX}*")
+          
+          # Thêm || true để tránh crash nếu không tìm thấy file hoặc lỗi mạng tạm thời
+          EXISTING_FILES=$(rclone lsf "$REMOTE:$PATH" --files-only --include "${PREFIX}*" || true)
           
           if [ -n "$EXISTING_FILES" ]; then
             echo "Found old versions matching prefix '$PREFIX':"
             echo "$EXISTING_FILES"
             
-            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d "message_id=${{ steps.send_initial.outputs.message_id }}" \
-            -d "text=Found old version(s). Moving to OLD folder..." \
-            -d "parse_mode=Markdown"
+            MSG_ID="${{ steps.send_initial.outputs.message_id }}"
+            # Chỉ gửi thông báo nếu có message_id hợp lệ
+            if [ -n "$MSG_ID" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
+                -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+                -d "message_id=$MSG_ID" \
+                -d "text=Found old version(s). Moving to OLD folder..." \
+                -d "parse_mode=Markdown"
+            else
+                echo "Warning: No message_id found, skipping Telegram update."
+            fi
 
             IFS=$'\n'
             for FILE in $EXISTING_FILES; do
               echo "Moving '$FILE' to '$PATH/OLD/'..."
-              rclone move "$REMOTE:$PATH/$FILE" "$REMOTE:$PATH/OLD/"
+              rclone move "$REMOTE:$PATH/$FILE" "$REMOTE:$PATH/OLD/" --verbose
             done
             unset IFS
             
@@ -125,11 +144,15 @@ jobs:
         id: upload
         run: |
           echo "Updating Telegram message to 'Uploading'..."
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-          -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-          -d "message_id=${{ steps.send_initial.outputs.message_id }}" \
-          -d "text=Uploading: \`${{ steps.parse.outputs.final_name }}\`" \
-          -d "parse_mode=Markdown"
+          MSG_ID="${{ steps.send_initial.outputs.message_id }}"
+          
+          if [ -n "$MSG_ID" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
+              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+              -d "message_id=$MSG_ID" \
+              -d "text=Uploading: \`${{ steps.parse.outputs.final_name }}\`" \
+              -d "parse_mode=Markdown"
+          fi
           
           echo "Uploading to rclone remote"
           rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
@@ -143,7 +166,6 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message_id: ${{ steps.send_initial.outputs.message_id }}
           message: |
             ✅ Upload Successful!
             
@@ -161,9 +183,8 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message_id: ${{ needs.build.outputs.message_id }}
           message: |
             ❌ Upload FAILED!
             
-            File: `${{ needs.build.outputs.final_name }}`
+            Check GitHub Actions logs for details.
           format: markdown
