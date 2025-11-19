@@ -1,4 +1,4 @@
-name: DLon
+name: DL OTA FILE
 
 on:
   workflow_dispatch:
@@ -31,14 +31,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Tools
+      - name: Install Tools (Hardcore Fix)
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip aria2
-          # Dùng script chính thức để cài bản rclone mới nhất và link vào /usr/bin/rclone
-          curl https://rclone.org/install.sh | sudo bash
-          # Kiểm tra version ngay lập tức để đảm bảo rclone đã chạy được
-          echo "Verifying rclone installation..."
+          curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          unzip rclone-current-linux-amd64.zip
+          cd rclone-*-linux-amd64
+          sudo cp rclone /usr/bin/
+          sudo chown root:root /usr/bin/rclone
+          sudo chmod 755 /usr/bin/rclone
+          which rclone
           rclone version
 
       - name: Configure rclone
@@ -60,7 +63,6 @@ jobs:
           aria2c -x 16 -s 16 -o "${{ inputs.TEMP_FILE_NAME }}" "${{ inputs.DOWNLOAD_URL }}"
           
           echo "Attempting to extract and parse metadata..."
-          # Kiểm tra an toàn xem file zip có hợp lệ không
           if unzip -l "${{ inputs.TEMP_FILE_NAME }}" | grep -q "META-INF/com/android/metadata"; then
               unzip -p "${{ inputs.TEMP_FILE_NAME }}" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
           else
@@ -99,6 +101,37 @@ jobs:
             `${{ steps.parse.outputs.final_name }}`
           format: markdown
 
+      - name: Check if File Already Exists
+        id: check_duplicate
+        env:
+          REMOTE: ${{ inputs.ONEDRIVE_REMOTE }}
+          PATH: ${{ inputs.ONEDRIVE_PATH }}
+          FILENAME: ${{ steps.parse.outputs.final_name }}
+        run: |
+          if ! command -v rclone &> /dev/null; then
+              echo "ERROR: rclone command not found!"
+              exit 1
+          fi
+
+          echo "Checking for exact duplicate: $FILENAME in $REMOTE:$PATH"
+          DUPLICATE_CHECK=$(rclone lsf "$REMOTE:$PATH" --files-only --include "$FILENAME" || true)
+          
+          if [ -n "$DUPLICATE_CHECK" ]; then
+            echo "File $FILENAME already exists. Aborting."
+            
+            MSG_ID="${{ steps.send_initial.outputs.message_id }}"
+            if [ -n "$MSG_ID" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
+                -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+                -d "message_id=$MSG_ID" \
+                -d "text=⛔ **Upload Aborted!**%0A%0AFile \`$FILENAME\` already exists in Destination." \
+                -d "parse_mode=Markdown"
+            fi
+            exit 1
+          else
+            echo "No duplicate found. Proceeding."
+          fi
+
       - name: Check and Move Old Versions
         id: check_move
         if: steps.parse.outputs.prefix != ''
@@ -108,8 +141,6 @@ jobs:
           PREFIX: ${{ steps.parse.outputs.prefix }}
         run: |
           echo "Checking for existing files with prefix: $PREFIX in $REMOTE:$PATH"
-          
-          # Thêm || true để tránh crash nếu không tìm thấy file hoặc lỗi mạng tạm thời
           EXISTING_FILES=$(rclone lsf "$REMOTE:$PATH" --files-only --include "${PREFIX}*" || true)
           
           if [ -n "$EXISTING_FILES" ]; then
@@ -117,7 +148,6 @@ jobs:
             echo "$EXISTING_FILES"
             
             MSG_ID="${{ steps.send_initial.outputs.message_id }}"
-            # Chỉ gửi thông báo nếu có message_id hợp lệ
             if [ -n "$MSG_ID" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
                 -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
@@ -184,7 +214,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
-            ❌ Upload FAILED!
+            ❌ Upload FAILED / ABORTED!
             
-            Check GitHub Actions logs for details.
+            Reason: Error or Duplicate file detected.
           format: markdown
