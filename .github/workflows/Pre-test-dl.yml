@@ -1,4 +1,4 @@
-name: "Intelligent Book Downloader (PaddleOCR Clean)"
+name: "Intelligent Book Downloader (PaddleOCR Fix)"
 on:
   workflow_dispatch:
     inputs:
@@ -153,12 +153,9 @@ jobs:
           os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
           try:
-              ocr = PaddleOCR(use_textline_orientation=True, lang='vi', use_gpu=False, show_log=False)
-          except TypeError:
-              try:
-                  ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False, show_log=False)
-              except TypeError:
-                  ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False)
+              ocr = PaddleOCR(use_textline_orientation=True, lang='vi', use_gpu=False)
+          except Exception:
+              ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False)
 
           def process_folder(folder_path):
               print(f"--- Start processing: {folder_path} ---")
