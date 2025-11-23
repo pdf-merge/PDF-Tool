@@ -1,11 +1,26 @@
-name: "Intelligent Book Downloader (PaddleOCR Final)"
+name: "Intelligent Book Downloader (PaddleOCR Clean)"
 on:
   workflow_dispatch:
     inputs:
-      BOOK_ID: {required: true, default: "1"}
-      THREADS: {required: true, default: "512"}
-      PERFORM_OCR: {required: true, default: "yes", type: choice, options: ["yes", "no"]}
-env: {TZ: Asia/Ho_Chi_Minh}
+      BOOK_ID:
+        description: "BOOK_ID to download"
+        required: true
+        default: "1"
+      THREADS:
+        description: "Max threads"
+        required: true
+        default: "512"
+      PERFORM_OCR:
+        description: "Perform OCR?"
+        required: true
+        default: "yes"
+        type: choice
+        options:
+          - "yes"
+          - "no"
+env:
+  TZ: Asia/Ho_Chi_Minh
+
 jobs:
   download:
     runs-on: ubuntu-22.04
@@ -16,106 +31,270 @@ jobs:
       PERFORM_OCR: ${{ github.event.inputs.PERFORM_OCR }}
       PYTHONPATH: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v4
-        with: {repository: 'proplayer1131/sachyhocpdf_downloader-main', token: ${{ secrets.ACTION_TOKEN }}}
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.10"}
-      - id: select_account
-        env: {ACCOUNTS_SECRET: ${{ secrets.BHLNK_ACCOUNTS }}, RUN_NUMBER: ${{ github.run_number }}}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/sachyhocpdf_downloader-main'
+          token: ${{ secrets.ACTION_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Select Account Sequentially
+        id: select_account
+        env:
+          ACCOUNTS_SECRET: ${{ secrets.BHLNK_ACCOUNTS }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           ACCOUNTS_LIST=$(echo "${ACCOUNTS_SECRET}" | sed '/^\s*$/d')
-          LINE_NUM=$(( ((RUN_NUMBER - 1) % $(echo "${ACCOUNTS_LIST}" | wc -l)) + 1 ))
+          TOTAL_ACCOUNTS=$(echo "${ACCOUNTS_LIST}" | wc -l)
+          ACCOUNT_INDEX=$(( (RUN_NUMBER - 1) % TOTAL_ACCOUNTS ))
+          LINE_NUM=$((ACCOUNT_INDEX + 1))
           ACCOUNT_LINE=$(echo "${ACCOUNTS_LIST}" | awk "NR==${LINE_NUM}")
-          echo "BHLNK_EMAIL=$(echo "$ACCOUNT_LINE" | cut -d: -f1)" >> $GITHUB_ENV
-          echo "BHLNK_PASSWORD=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)" >> $GITHUB_ENV
-      - run: |
-          sudo apt-get update && sudo apt-get install -y git jq exiftool libgl1 libopenjp2-7 libffi-dev libssl-dev
-          pip install -U pip requests Pillow psutil
-          if [ "${PERFORM_OCR}" == "yes" ]; then pip install paddlepaddle paddleocr pymupdf; fi
-          if [ -f requirements.txt ]; then grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt && pip install -r requirements_linux.txt; fi
-      - env: {RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}}
+          BHLNK_EMAIL_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f1)
+          BHLNK_PASSWORD_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)
+          echo "::add-mask::$BHLNK_EMAIL_VALUE"
+          echo "::add-mask::$BHLNK_PASSWORD_VALUE"
+          echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
+          echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git jq exiftool libgl1 libopenjp2-7 libffi-dev libssl-dev
+          python -m pip install -U pip
+          pip install requests Pillow psutil
+          if [ "${PERFORM_OCR}" == "yes" ]; then
+            pip install paddlepaddle paddleocr pymupdf
+          fi
+          if [ -f requirements.txt ]; then
+            grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
+            pip install -r requirements_linux.txt
+          fi
+
+      - name: Configure Rclone
+        env:
+          RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
-          mkdir -p ~/.config/rclone && printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
-          echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
-      - id: download_script
+          mkdir -p ~/.config/rclone
+          printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
+
+      - name: Set Main Upload Destination
+        run: echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
+
+      - name: Run Intelligent Download Script
+        id: download_script
         run: python -u scripts/download_one.py
-      - id: status_reader
+
+      - name: Read Download Status
+        id: status_reader
         if: always()
-        run: if [ -f "download_status.txt" ]; then echo "DOWNLOAD_STATUS=$(cat download_status.txt)" >> $GITHUB_OUTPUT; else echo "DOWNLOAD_STATUS=SCRIPT_ERROR" >> $GITHUB_OUTPUT; fi
-      - id: sanitize
+        run: |
+          if [ -f "download_status.txt" ]; then
+            STATUS=$(cat download_status.txt)
+            echo "DOWNLOAD_STATUS=$STATUS" >> $GITHUB_OUTPUT
+          else
+            echo "DOWNLOAD_STATUS=SCRIPT_ERROR" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Sanitize Folder Name
+        id: sanitize
         if: hashFiles('folder_name.txt') != ''
         run: |
           ORIGINAL_NAME=$(cat folder_name.txt)
           SANITIZED_NAME=$(echo "$ORIGINAL_NAME" | sed 's#[*:<>?\/\\|]#_#g')
-          [ "$ORIGINAL_NAME" != "$SANITIZED_NAME" ] && mv -- "$ORIGINAL_NAME" "$SANITIZED_NAME"
+          if [ "$ORIGINAL_NAME" != "$SANITIZED_NAME" ]; then
+            mv -- "$ORIGINAL_NAME" "$SANITIZED_NAME"
+          fi
           echo "sanitized_name=$SANITIZED_NAME" >> $GITHUB_OUTPUT
-      - id: metadata_pass_1
+
+      - name: 'Force PDF Metadata (Pre-OCR Pass)'
+        id: metadata_pass_1
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != ''
         run: |
-          cd "${{ steps.sanitize.outputs.sanitized_name }}"
-          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do exiftool -Title="LSC" -Author="LSC" -Subject="LSC" -Creator="LSC" -Producer="LSC" -overwrite_original "$pdf_file"; done
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          cd "$FOLDER_NAME"
+          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
+            exiftool -Title="LSC" -Author="LSC" -Subject="LSC" -Creator="LSC" -Producer="LSC" -overwrite_original "$pdf_file"
+          done
           cd ..
-      - id: upload_no_ocr
+
+      - name: 'Upload Book Folder (No OCR)'
+        id: upload_no_ocr
         if: steps.metadata_pass_1.conclusion == 'success'
-        env: {RCLONE_DEST_PATH: "1drive:/LSC_Books/No_OCR"}
+        env:
+          RCLONE_DEST_PATH: "1drive:/LSC_Books/No_OCR"
         run: |
-          TARGET="${{ env.RCLONE_DEST_PATH }}/${{ steps.sanitize.outputs.sanitized_name }}"
-          rclone copy "${{ steps.sanitize.outputs.sanitized_name }}" "$TARGET" --transfers=8 --checkers=16 --progress
-          echo "RCLONE_LINK_NO_OCR=$(rclone link "$TARGET")" >> $GITHUB_ENV
-      - if: env.PERFORM_OCR == 'yes'
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
+          rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
+          LINK=$(rclone link "$TARGET")
+          echo "::add-mask::$LINK"
+          echo "RCLONE_LINK_NO_OCR=$LINK" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Create PaddleOCR Script
+        if: env.PERFORM_OCR == 'yes'
         run: |
           cat <<EOF > paddle_ocr_process.py
-          import os, fitz, sys, logging, warnings
+          import os
+          import fitz
           from paddleocr import PaddleOCR
-          warnings.filterwarnings("ignore"); logging.getLogger("ppocr").setLevel(logging.ERROR); os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-          try: ocr = PaddleOCR(use_textline_orientation=True, lang='vi', use_gpu=False, show_log=False)
+          import sys
+          import logging
+          import warnings
+
+          warnings.filterwarnings("ignore")
+          logging.getLogger("ppocr").setLevel(logging.ERROR)
+          os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+          try:
+              ocr = PaddleOCR(use_textline_orientation=True, lang='vi', use_gpu=False, show_log=False)
           except TypeError:
-            try: ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False, show_log=False)
-            except TypeError: ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False)
+              try:
+                  ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False, show_log=False)
+              except TypeError:
+                  ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False)
+
           def process_folder(folder_path):
-            for root, dirs, files in os.walk(folder_path):
-              for file in files:
-                if file.lower().endswith(".pdf"):
-                  try: ocr_pdf(os.path.join(root, file)); print(f"Done: {file}")
-                  except Exception as e: print(f"Err {file}: {e}")
+              print(f"--- Start processing: {folder_path} ---")
+              for root, dirs, files in os.walk(folder_path):
+                  for file in files:
+                      if file.lower().endswith(".pdf"):
+                          full_path = os.path.join(root, file)
+                          try:
+                              ocr_pdf(full_path)
+                              print(f"[OK] Done: {file}")
+                          except Exception as e:
+                              print(f"[Error] {file}: {e}")
+
           def ocr_pdf(input_path):
-            doc = fitz.open(input_path); temp_output = input_path + ".temp.pdf"; has_changes = False
-            for page_num, page in enumerate(doc):
-              if (page_num + 1) % 5 == 0: print(f"Page {page_num + 1}/{len(doc)}")
-              try: result = ocr.ocr(page.get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png"), cls=True)
-              except: continue
-              if not result or result[0] is None: continue
-              has_changes = True
-              for line in result[0]:
-                if line[1][1] < 0.5: continue
-                box = line[0]; x0 = min(p[0] for p in box)/2; y0 = min(p[1] for p in box)/2; y1 = max(p[1] for p in box)/2
-                try: page.insert_text(fitz.Point(x0, y1-(y1-y0)*0.12), line[1][0], fontsize=(y1-y0)*0.75, fontname="helv", render_mode=3)
-                except: pass
-            if has_changes: doc.save(temp_output); doc.close(); os.replace(temp_output, input_path)
-            else: doc.close(); (os.remove(temp_output) if os.path.exists(temp_output) else None)
-          if __name__ == "__main__": (process_folder(sys.argv[1]) if len(sys.argv) > 1 else None)
+              doc = fitz.open(input_path)
+              temp_output = input_path + ".temp.pdf"
+              has_changes = False
+              
+              for page_num, page in enumerate(doc):
+                  if (page_num + 1) % 5 == 0 or page_num == 0: 
+                      print(f"  -> Page {page_num + 1}/{len(doc)}")
+                  
+                  mat = fitz.Matrix(2, 2)
+                  pix = page.get_pixmap(matrix=mat)
+                  img_data = pix.tobytes("png")
+                  
+                  try:
+                      result = ocr.ocr(img_data, cls=True)
+                  except: continue
+
+                  if not result or result[0] is None: continue
+                  
+                  has_changes = True
+                  
+                  for line in result[0]:
+                      box = line[0]
+                      text = line[1][0]
+                      conf = line[1][1]
+                      
+                      if conf < 0.5: continue
+                      
+                      x_coords = [p[0]/2 for p in box]
+                      y_coords = [p[1]/2 for p in box]
+                      
+                      x0, y0 = min(x_coords), min(y_coords)
+                      x1, y1 = max(x_coords), max(y_coords)
+                      
+                      box_height = y1 - y0
+                      f_size = box_height * 0.75
+                      
+                      text_pos = fitz.Point(x0, y1 - (box_height * 0.12))
+                      
+                      try:
+                          page.insert_text(
+                              text_pos, 
+                              text, 
+                              fontsize=f_size, 
+                              fontname="helv", 
+                              render_mode=3
+                          )
+                      except:
+                          pass
+                          
+              if has_changes:
+                  doc.save(temp_output)
+                  doc.close()
+                  os.replace(temp_output, input_path)
+              else:
+                  doc.close()
+                  if os.path.exists(temp_output): os.remove(temp_output)
+
+          if __name__ == "__main__":
+              if len(sys.argv) > 1: process_folder(sys.argv[1])
           EOF
-      - id: ocr
+
+      - name: Run PaddleOCR
+        id: ocr
         if: steps.status_reader.outputs.DOWNLOAD_STATUS != 'EXISTS' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'SCRIPT_ERROR' && steps.status_reader.outputs.DOWNLOAD_STATUS != 'NOT_FOUND' && steps.sanitize.outputs.sanitized_name != '' && env.PERFORM_OCR == 'yes'
-        run: python paddle_ocr_process.py "${{ steps.sanitize.outputs.sanitized_name }}"
-      - id: metadata_pass_2
+        run: |
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          python paddle_ocr_process.py "$FOLDER_NAME"
+          echo "OCR processing complete."
+
+      - name: 'Force PDF Metadata (Post-OCR Pass)'
+        id: metadata_pass_2
         if: steps.ocr.conclusion == 'success' && env.PERFORM_OCR == 'yes'
         run: |
-          cd "${{ steps.sanitize.outputs.sanitized_name }}"
-          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do exiftool -Title="LSC" -Author="LSC" -Subject="LSC" -Creator="LSC" -Producer="LSC" -overwrite_original "$pdf_file"; done
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          cd "$FOLDER_NAME"
+          find . -name "*.pdf" -print0 | while IFS= read -r -d '' pdf_file; do
+            exiftool -Title="LSC" -Author="LSC" -Subject="LSC" -Creator="LSC" -Producer="LSC" -overwrite_original "$pdf_file"
+          done
           cd ..
-      - id: upload_ocr
+
+      - name: 'Upload Book Folder (OCR)'
+        id: upload_ocr
         if: steps.metadata_pass_2.conclusion == 'success' && env.PERFORM_OCR == 'yes'
-        env: {RCLONE_DEST_PATH: "1drive:/LSC_Books"}
+        env:
+          RCLONE_DEST_PATH: "1drive:/LSC_Books"
         run: |
-          TARGET="${{ env.RCLONE_DEST_PATH }}/${{ steps.sanitize.outputs.sanitized_name }}"
-          rclone copy "${{ steps.sanitize.outputs.sanitized_name }}" "$TARGET" --transfers=8 --checkers=16 --progress
-          echo "RCLONE_LINK_OCR=$(rclone link "$TARGET")" >> $GITHUB_ENV
-      - if: always() && hashFiles('telegram_message.txt') != ''
+          FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
+          TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
+          rclone copy "${FOLDER_NAME}" "${TARGET}" --transfers=8 --checkers=16 --progress
+          LINK=$(rclone link "$TARGET")
+          if [ -z "$LINK" ]; then LINK="Không thể tạo link"; fi
+          echo "::add-mask::$LINK"
+          echo "RCLONE_LINK_OCR=$LINK" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Finalize Telegram Message
+        if: always() && hashFiles('telegram_message.txt') != ''
         run: |
-          if [ -n "${{ env.RCLONE_LINK_NO_OCR }}" ]; then sed -i "s|\[Đang xử lý...\]|\[Nhấn vào đây\](${{ env.RCLONE_LINK_NO_OCR }})|g" telegram_message.txt; sed -i "s|🔗 Link Tải:|🔗 Link (No-OCR):|g" telegram_message.txt; else sed -i "s|\[Đang xử lý...\]|\[Upload thất bại\]|g" telegram_message.txt; fi
-          if [ "${{ env.PERFORM_OCR }}" == "yes" ]; then echo "🔗 Link (OCR): $([ -n "${{ env.RCLONE_LINK_OCR }}" ] && echo "[Nhấn vào đây](${{ env.RCLONE_LINK_OCR }})" || echo "[Upload thất bại]")" >> telegram_message.txt; fi
-      - if: always() && hashFiles('telegram_message.txt') != ''
+          LINK_NO_OCR="${{ env.RCLONE_LINK_NO_OCR }}"
+          LINK_OCR="${{ env.RCLONE_LINK_OCR }}"
+          PERFORMED_OCR="${{ env.PERFORM_OCR }}"
+          
+          if [ -n "$LINK_NO_OCR" ]; then
+            sed -i "s|\[Đang xử lý...\]|\[Nhấn vào đây\]($LINK_NO_OCR)|g" telegram_message.txt
+            sed -i "s|🔗 Link Tải:|🔗 Link (No-OCR):|g" telegram_message.txt
+          else
+            sed -i "s|\[Đang xử lý...\]|\[Upload thất bại\]|g" telegram_message.txt
+            sed -i "s|🔗 Link Tải:|🔗 Link (No-OCR):|g" telegram_message.txt
+          fi
+          
+          if [ "$PERFORMED_OCR" == "yes" ]; then
+            if [ -n "$LINK_OCR" ]; then
+              echo "🔗 Link (OCR - Paddle): [Nhấn vào đây]($LINK_OCR)" >> telegram_message.txt
+            else
+              echo "🔗 Link (OCR - Paddle): [Upload thất bại]" >> telegram_message.txt
+            fi
+          fi
+
+      - name: Upload Result Message
+        if: always() && hashFiles('telegram_message.txt') != ''
         uses: actions/upload-artifact@v4
-        with: {name: result-message-${{ github.run_id }}, path: telegram_message.txt, retention-days: 1}
+        with:
+          name: result-message-${{ github.run_id }}
+          path: telegram_message.txt
+          retention-days: 1
