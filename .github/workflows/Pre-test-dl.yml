@@ -160,10 +160,18 @@ jobs:
           import fitz  # PyMuPDF
           from paddleocr import PaddleOCR
           import sys
+          import logging
 
-          # Khởi tạo PaddleOCR (Tiếng Việt)
-          # use_angle_cls=True giúp xoay chữ nếu bị nghiêng
-          ocr = PaddleOCR(use_angle_cls=True, lang='vi', show_log=False)
+          # Tắt log level debug của ppocr để đỡ rác console
+          logging.getLogger("ppocr").setLevel(logging.WARNING)
+
+          # SỬA LỖI: Xóa 'show_log=False' và đổi use_angle_cls (deprecated) -> use_textline_orientation
+          # Nếu bản paddleocr chưa quá mới thì dùng use_angle_cls=True vẫn được, nhưng show_log bắt buộc phải bỏ.
+          try:
+              ocr = PaddleOCR(use_angle_cls=True, lang='vi')
+          except TypeError:
+              # Fallback cho các bản cập nhật API khác nếu có
+              ocr = PaddleOCR(use_textline_orientation=True, lang='vi')
 
           def process_folder(folder_path):
               for root, dirs, files in os.walk(folder_path):
@@ -191,10 +199,14 @@ jobs:
                   img_data = pix.tobytes("png")
                   
                   # Chạy PaddleOCR
-                  result = ocr.ocr(img_data, cls=True)
+                  try:
+                      result = ocr.ocr(img_data, cls=True)
+                  except:
+                      # Fallback nếu lỗi image array
+                      continue
                   
                   # Nếu không có chữ, bỏ qua
-                  if result is None or result[0] is None:
+                  if result is None or not result or result[0] is None:
                       continue
                       
                   # result cấu trúc: [[[[x1,y1],[x2,y2]...], ("text", conf)], ...]
