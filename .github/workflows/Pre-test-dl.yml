@@ -67,7 +67,8 @@ jobs:
           python -m pip install -U pip
           pip install requests Pillow psutil
           if [ "${PERFORM_OCR}" == "yes" ]; then
-            pip install paddlepaddle paddleocr pymupdf
+            # Fix: Pin specific stable version of paddleocr
+            pip install paddlepaddle paddleocr==2.8.1 pymupdf
           fi
           if [ -f requirements.txt ]; then
             grep -v -E 'tkinter|pywin32|win32mica|upx|customtkinter|futures|tqdm' requirements.txt > requirements_linux.txt
@@ -147,16 +148,14 @@ jobs:
           import sys
           import logging
           import warnings
-
           warnings.filterwarnings("ignore")
           logging.getLogger("ppocr").setLevel(logging.ERROR)
           os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
           try:
-              ocr = PaddleOCR(use_textline_orientation=True, lang='vi', use_gpu=False)
+              # Fix: Removed use_gpu=False to allow auto-detection/defaults
+              ocr = PaddleOCR(use_textline_orientation=True, lang='vi')
           except Exception:
-              ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False)
-
+              ocr = PaddleOCR(use_angle_cls=True, lang='vi')
           def process_folder(folder_path):
               print(f"--- Start processing: {folder_path} ---")
               for root, dirs, files in os.walk(folder_path):
@@ -168,7 +167,6 @@ jobs:
                               print(f"[OK] Done: {file}")
                           except Exception as e:
                               print(f"[Error] {file}: {e}")
-
           def ocr_pdf(input_path):
               doc = fitz.open(input_path)
               temp_output = input_path + ".temp.pdf"
@@ -185,7 +183,6 @@ jobs:
                   try:
                       result = ocr.ocr(img_data, cls=True)
                   except: continue
-
                   if not result or result[0] is None: continue
                   
                   has_changes = True
@@ -226,7 +223,6 @@ jobs:
               else:
                   doc.close()
                   if os.path.exists(temp_output): os.remove(temp_output)
-
           if __name__ == "__main__":
               if len(sys.argv) > 1: process_folder(sys.argv[1])
           EOF
