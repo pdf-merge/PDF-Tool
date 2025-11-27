@@ -59,7 +59,7 @@ jobs:
         with:
           python-version: "3.11"
           
-      - name: Select Account from Pool 2
+      - name: Select Account Sequentially
         id: select_account
         env:
           ACCOUNTS_SECRET: ${{ secrets.BHLNK_ACCOUNTS2 }}
@@ -69,13 +69,14 @@ jobs:
           TOTAL_ACCOUNTS=$(echo "${ACCOUNTS_LIST}" | wc -l)
           ACCOUNT_INDEX=$(( (RUN_NUMBER - 1) % TOTAL_ACCOUNTS ))
           LINE_NUM=$((ACCOUNT_INDEX + 1))
+          echo "Selected Account Line: ${LINE_NUM}"
           ACCOUNT_LINE=$(echo "${ACCOUNTS_LIST}" | awk "NR==${LINE_NUM}")
           BHLNK_EMAIL_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f1)
           BHLNK_PASSWORD_VALUE=$(echo "$ACCOUNT_LINE" | cut -d: -f2-)
           echo "::add-mask::$BHLNK_EMAIL_VALUE"
           echo "::add-mask::$BHLNK_PASSWORD_VALUE"
           echo "BHLNK_EMAIL=${BHLNK_EMAIL_VALUE}" >> $GITHUB_ENV
-          echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV
+          echo "BHLNK_PASSWORD=${BHLNK_PASSWORD_VALUE}" >> $GITHUB_ENV        
 
       - name: Install Base Dependencies
         run: |
