@@ -114,7 +114,6 @@ jobs:
 
           echo "🎯 Target: $INPUT"
 
-          # Sửa tên remote thành '1drive' theo log của bạn
           echo "🔍 Searching in OneDrive: Mirror/Domestic..."
           FILE="$(rclone --config rclone.conf lsf '1drive:/Mirror/Domestic' --files-only --include "${INPUT}*" | head -n1)"
           
@@ -123,13 +122,22 @@ jobs:
             SOURCE_PATH="1drive:/Mirror/Domestic"
           else
             echo "❌ Error: File not found in Mirror/Domestic (1drive)!"
-            # Đã bỏ phần check GDrive vì config của bạn chỉ có 1drive
             exit 1
           fi
 
-          echo "⬇️ Downloading $FILE..."
-          rclone --config rclone.conf copy "$SOURCE_PATH/$FILE" . \
-            --transfers=8 --checkers=16 --progress
+          echo "🔗 Generating Direct Link..."
+          DIRECT_URL=$(rclone --config rclone.conf link "$SOURCE_PATH/$FILE")
+          
+          if [ -n "$DIRECT_URL" ]; then
+             echo "::add-mask::$DIRECT_URL"
+             echo "🌐 Link generated: $DIRECT_URL"
+             
+             echo "⬇️ Downloading $FILE with aria2..."
+             aria2c -x16 -s16 -k1M --check-certificate=false -o "$FILE" "$DIRECT_URL"
+          else
+             echo "❌ Error: Could not generate direct link. Falling back to rclone copy..."
+             rclone --config rclone.conf copy "$SOURCE_PATH/$FILE" . --transfers=8 --checkers=16 --progress
+          fi
 
           echo "📦 Unzipping ROM..."
           mkdir -p rom_extracted
