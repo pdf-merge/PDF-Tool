@@ -1,4 +1,4 @@
-name: test-z
+name: test-zz
 
 on:
   workflow_dispatch:
@@ -176,12 +176,14 @@ jobs:
           echo "🛠️ Merging tool into extracted ROM..."
           cp -rf tools_repo/* rom_extracted/
           rm -rf rom_extracted/.git
+
+          echo "🔑 Granting execute permissions..."
+          sudo chmod -R 777 rom_extracted/
           
           echo "⚙️ Running create_super_img.sh..."
           cd rom_extracted
           
           if [ -f "create_super_img.sh" ]; then
-            sudo chmod +x create_super_img.sh
             sudo ./create_super_img.sh
           else
             echo "❌ Error: create_super_img.sh not found inside rom_extracted!"
