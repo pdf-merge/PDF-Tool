@@ -1,0 +1,183 @@
+name: Build Super Domestic
+
+on:
+  workflow_dispatch:
+    inputs:
+      ROM_URL:
+        description: 'Select device code OR Select Custom'
+        required: true
+        default: 'PKG110'
+        type: choice 
+        options:
+          - PLK110
+          - PLQ110
+          - PJZ110
+          - PKX110
+          - PKG110
+          - PKR110
+          - PLF110
+          - PLC110
+          - PJE110
+          - PJX110
+          - PJF110
+          - PJD110
+          - OPD2413
+          - OPD2404
+          - RMX6699
+          - RMX5200
+          - RMX5010
+          - RMX5090
+          - RMX6688
+          - RMX3800
+          - RMX3888
+          - RMX5060
+          - RMX5062
+          - RMX5080
+          - RMX5071
+          - PKT110
+          - PKC110
+          - PKB110
+          - PLB110
+          - PHY110
+          - Custom
+      
+      CUSTOM_URL:
+        description: 'Custom (If selected above)'
+        required: false
+        default: ''
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      # --- PHẦN CLEAN TỪ FILE MẪU MỚI ---
+      - name: Clean 1
+        run: |
+          docker rmi $(docker images -q) || true
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/sudo apt/sources.list.d || true
+          sudo apt -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* || true
+          sudo apt -y autoremove --purge || true
+          sudo apt -y autoclean || true
+          sudo apt clean || true
+      
+      - name: Clean 2
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 1024
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+      
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      # --- PHẦN CÀI ĐẶT DEPENDENCIES TỪ FILE MẪU MỚI ---
+      - name: Install System & Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          sudo apt-get install -y --no-install-recommends \
+            aria2 rclone zip unzip p7zip-full python3-pip \
+            liblz4-tool zstd xmlstarlet bc file git \
+            build-essential autoconf libtool pkg-config uuid-dev liblz4-dev libselinux1-dev \
+            zlib1g-dev \
+            android-sdk-libsparse-utils
+            
+      # --- SETUP RCLONE (Theo logic cũ để tương thích với script download) ---
+      - name: Set up Rclone Tool
+        run: |
+          mkdir -p bin
+          # Tải tool rclone đặc biệt đã cấu hình sẵn (như file cũ yêu cầu)
+          aria2c -x 16 -s 16 -j 1 -o bin/rclone1 https://github.com/buihien224/toolbox_notification/releases/download/rclone/rclone1
+          chmod +x bin/rclone1
+          # Tải file config nếu cần thiết cho tool này
+          wget -O bin/lsc.conf https://github.com/buihien224/toolbox_notification/releases/download/rclone/lsc.conf || touch bin/lsc.conf
+
+      # --- LOGIC CHÍNH: TẢI DOMESTIC -> GIẢI NÉN -> MERGE REPO -> UPLOAD ---
+      - name: Process Super Domestic
+        run: |
+          set -e
+          
+          # 1. XÁC ĐỊNH TÊN ROM
+          OPTION="${{ github.event.inputs.ROM_URL }}"
+          CUSTOM="${{ github.event.inputs.CUSTOM_URL }}"
+          
+          if [ "$OPTION" == "Custom" ]; then
+            if [ -z "$CUSTOM" ]; then
+              echo "❌ Error: Custom selected but empty URL!"
+              exit 1
+            fi
+            INPUT="$CUSTOM"
+          else
+            INPUT="$OPTION"
+          fi
+
+          echo "🎯 Target: $INPUT"
+
+          # 2. TÌM KIẾM TRONG MIRROR/DOMESTIC
+          echo "🔍 Searching in OneDrive: Mirror/Domestic..."
+          FILE="$(./bin/rclone1 --config bin/lsc.conf lsf '1drive1:/Mirror/Domestic' --files-only --include "${INPUT}*" | head -n1)"
+          
+          if [ -n "$FILE" ]; then
+            echo "✅ Found in OneDrive Domestic: $FILE"
+            SOURCE_PATH="1drive1:/Mirror/Domestic"
+          else
+            # Fallback tìm ở GDrive nếu Domestic không có
+            echo "⚠️ Not found in Domestic. Checking GDrive..."
+            FILE="$(./bin/rclone1 --config bin/lsc.conf lsf 'gdrive1:/VS_Stock' --files-only --include "${INPUT}*" | head -n1)"
+            if [ -n "$FILE" ]; then
+                SOURCE_PATH="gdrive1:/VS_Stock"
+                echo "✅ Found in GDrive backup: $FILE"
+            else
+                echo "❌ Error: File not found in Mirror/Domestic or GDrive!"
+                exit 1
+            fi
+          fi
+
+          # 3. TẢI FILE VỀ
+          echo "⬇️ Downloading $FILE..."
+          ./bin/rclone1 --config bin/lsc.conf copy "$SOURCE_PATH/$FILE" . \
+            --transfers=8 --checkers=16 --progress
+
+          # 4. GIẢI NÉN
+          echo "📦 Unzipping ROM..."
+          mkdir -p rom_extracted
+          unzip -q "$FILE" -d rom_extracted
+          rm "$FILE" # Xóa file zip cho nhẹ
+
+          # 5. KIỂM TRA CẤU TRÚC
+          echo "📂 Checking structure..."
+          if [ -d "rom_extracted/IMAGES" ] && [ -d "rom_extracted/SYSTEM" ] && [ -d "rom_extracted/RADIO" ]; then
+              echo "✅ Valid Structure: IMAGES, SYSTEM, RADIO found."
+          else
+              echo "⚠️ Warning: Standard folders missing. Listing content:"
+              ls -F rom_extracted/
+          fi
+
+          # 6. TẢI REPO SUPER DOMESTIC
+          echo "⬇️ Cloning build-super-domestic..."
+          # Sử dụng token GHP nếu repo này private hoặc để tránh limit, nếu public thì link thường ok
+          git clone https://github.com/proplayer1131/build-super-domestic tools_repo
+
+          # 7. MERGE TOOL VÀO ROM
+          echo "🛠️ Merging tool into extracted ROM..."
+          cp -rf tools_repo/* rom_extracted/
+          rm -rf rom_extracted/.git # Xóa rác git
+          
+          echo "🎉 Merge done. Folder content:"
+          ls -F rom_extracted/
+
+          # 8. UPLOAD LÊN MIRROR/DOMESTIC/SUPER
+          DIR_NAME="${FILE%.*}" # Tên thư mục không có đuôi .zip
+          DEST_PATH="1drive1:/Mirror/Domestic/Super/$DIR_NAME"
+          
+          echo "🚀 Uploading to: $DEST_PATH"
+          ./bin/rclone1 --config bin/lsc.conf copy "rom_extracted" "$DEST_PATH" \
+            --transfers=8 --checkers=16 --progress
+
+          echo "✅ Process Finished Successfully!"
