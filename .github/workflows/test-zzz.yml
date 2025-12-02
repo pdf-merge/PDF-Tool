@@ -92,6 +92,9 @@ jobs:
         run: |
           set -e
           
+          mkdir -p tmp
+          export TMPDIR=$(pwd)/tmp
+          
           echo "🔧 Setting up Rclone config..."
           echo "$RCLONE_CONF" > rclone.conf
           
