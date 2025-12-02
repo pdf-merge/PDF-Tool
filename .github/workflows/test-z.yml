@@ -93,7 +93,14 @@ jobs:
           set -e
           
           echo "🔧 Setting up Rclone config..."
+          # Đảm bảo secret được ghi đúng định dạng
           echo "$RCLONE_CONF" > rclone.conf
+          
+          # --- DEBUG STEP: Kiểm tra tên remote ---
+          echo "👀 Listing available remotes in config:"
+          rclone --config rclone.conf listremotes
+          echo "-----------------------------------"
+          # ---------------------------------------
           
           OPTION="${{ github.event.inputs.ROM_URL }}"
           CUSTOM="${{ github.event.inputs.CUSTOM_URL }}"
