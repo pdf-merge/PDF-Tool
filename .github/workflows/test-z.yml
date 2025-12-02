@@ -54,7 +54,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 720
     steps:
-      # --- PHẦN CLEAN ---
       - name: Clean 1
         run: |
           docker rmi $(docker images -q) || true
@@ -76,7 +75,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
       
-      # --- PHẦN CÀI ĐẶT DEPENDENCIES ---
       - name: Install System & Build Dependencies
         run: |
           sudo apt-get update
@@ -88,20 +86,15 @@ jobs:
             zlib1g-dev \
             android-sdk-libsparse-utils
             
-      # --- SETUP RCLONE ---
-      - name: Set up Rclone Tool
-        run: |
-          mkdir -p bin
-          aria2c -x 16 -s 16 -j 1 -o bin/rclone1 https://github.com/buihien224/toolbox_notification/releases/download/rclone/rclone1
-          chmod +x bin/rclone1
-          wget -O bin/lsc.conf https://github.com/buihien224/toolbox_notification/releases/download/rclone/lsc.conf || touch bin/lsc.conf
-
-      # --- LOGIC CHÍNH ---
       - name: Process Super Domestic
+        env:
+            RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         run: |
           set -e
           
-          # 1. XÁC ĐỊNH TÊN ROM
+          echo "🔧 Setting up Rclone config..."
+          echo "$RCLONE_CONF" > rclone.conf
+          
           OPTION="${{ github.event.inputs.ROM_URL }}"
           CUSTOM="${{ github.event.inputs.CUSTOM_URL }}"
           
@@ -117,16 +110,15 @@ jobs:
 
           echo "🎯 Target: $INPUT"
 
-          # 2. TÌM KIẾM TRONG MIRROR/DOMESTIC
           echo "🔍 Searching in OneDrive: Mirror/Domestic..."
-          FILE="$(./bin/rclone1 --config bin/lsc.conf lsf '1drive1:/Mirror/Domestic' --files-only --include "${INPUT}*" | head -n1)"
+          FILE="$(rclone --config rclone.conf lsf '1drive1:/Mirror/Domestic' --files-only --include "${INPUT}*" | head -n1)"
           
           if [ -n "$FILE" ]; then
             echo "✅ Found in OneDrive Domestic: $FILE"
             SOURCE_PATH="1drive1:/Mirror/Domestic"
           else
             echo "⚠️ Not found in Domestic. Checking GDrive..."
-            FILE="$(./bin/rclone1 --config bin/lsc.conf lsf 'gdrive1:/VS_Stock' --files-only --include "${INPUT}*" | head -n1)"
+            FILE="$(rclone --config rclone.conf lsf 'gdrive1:/VS_Stock' --files-only --include "${INPUT}*" | head -n1)"
             if [ -n "$FILE" ]; then
                 SOURCE_PATH="gdrive1:/VS_Stock"
                 echo "✅ Found in GDrive backup: $FILE"
@@ -136,18 +128,15 @@ jobs:
             fi
           fi
 
-          # 3. TẢI FILE VỀ
           echo "⬇️ Downloading $FILE..."
-          ./bin/rclone1 --config bin/lsc.conf copy "$SOURCE_PATH/$FILE" . \
+          rclone --config rclone.conf copy "$SOURCE_PATH/$FILE" . \
             --transfers=8 --checkers=16 --progress
 
-          # 4. GIẢI NÉN
           echo "📦 Unzipping ROM..."
           mkdir -p rom_extracted
           unzip -q "$FILE" -d rom_extracted
-          rm "$FILE" # Xóa file zip cho nhẹ
+          rm "$FILE"
 
-          # 5. KIỂM TRA CẤU TRÚC
           echo "📂 Checking structure..."
           if [ -d "rom_extracted/IMAGES" ] && [ -d "rom_extracted/SYSTEM" ] && [ -d "rom_extracted/RADIO" ]; then
               echo "✅ Valid Structure: IMAGES, SYSTEM, RADIO found."
@@ -156,16 +145,13 @@ jobs:
               ls -F rom_extracted/
           fi
 
-          # 6. TẢI REPO SUPER DOMESTIC
           echo "⬇️ Cloning build-super-domestic..."
           git clone https://github.com/proplayer1131/build-super-domestic tools_repo
 
-          # 7. MERGE TOOL VÀO ROM
           echo "🛠️ Merging tool into extracted ROM..."
           cp -rf tools_repo/* rom_extracted/
           rm -rf rom_extracted/.git
           
-          # 8. CHẠY SCRIPT TẠO SUPER IMAGE
           echo "⚙️ Running create_super_img.sh..."
           cd rom_extracted
           
@@ -178,13 +164,10 @@ jobs:
             exit 1
           fi
           
-          cd .. # Quay lại thư mục gốc
+          cd ..
 
-          # 9. UPLOAD FILE SUPER.IMG
-          # Đường dẫn file img tạo ra (theo script bạn cung cấp là nằm trong thư mục IMAGES)
           TARGET_IMG="rom_extracted/IMAGES/super.img"
           
-          # Tên thư mục trên cloud (bỏ đuôi .zip)
           DIR_NAME="${FILE%.*}" 
           DEST_PATH="1drive1:/Mirror/Domestic/Super/$DIR_NAME"
           
@@ -194,8 +177,7 @@ jobs:
               echo "✅ File found! Uploading ONLY super.img..."
               echo "➡️ Destination: $DEST_PATH/super.img"
               
-              # Upload file cụ thể thay vì cả thư mục
-              ./bin/rclone1 --config bin/lsc.conf copy "$TARGET_IMG" "$DEST_PATH" \
+              rclone --config rclone.conf copy "$TARGET_IMG" "$DEST_PATH" \
                 --transfers=8 --checkers=16 --progress
           else
               echo "❌ Error: super.img NOT found at $TARGET_IMG"
