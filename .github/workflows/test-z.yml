@@ -1,4 +1,4 @@
-name: Build Super Domestic
+name: test-z
 
 on:
   workflow_dispatch:
@@ -93,14 +93,11 @@ jobs:
           set -e
           
           echo "🔧 Setting up Rclone config..."
-          # Đảm bảo secret được ghi đúng định dạng
           echo "$RCLONE_CONF" > rclone.conf
           
-          # --- DEBUG STEP: Kiểm tra tên remote ---
           echo "👀 Listing available remotes in config:"
           rclone --config rclone.conf listremotes
           echo "-----------------------------------"
-          # ---------------------------------------
           
           OPTION="${{ github.event.inputs.ROM_URL }}"
           CUSTOM="${{ github.event.inputs.CUSTOM_URL }}"
@@ -117,22 +114,17 @@ jobs:
 
           echo "🎯 Target: $INPUT"
 
+          # Sửa tên remote thành '1drive' theo log của bạn
           echo "🔍 Searching in OneDrive: Mirror/Domestic..."
-          FILE="$(rclone --config rclone.conf lsf '1drive1:/Mirror/Domestic' --files-only --include "${INPUT}*" | head -n1)"
+          FILE="$(rclone --config rclone.conf lsf '1drive:/Mirror/Domestic' --files-only --include "${INPUT}*" | head -n1)"
           
           if [ -n "$FILE" ]; then
             echo "✅ Found in OneDrive Domestic: $FILE"
-            SOURCE_PATH="1drive1:/Mirror/Domestic"
+            SOURCE_PATH="1drive:/Mirror/Domestic"
           else
-            echo "⚠️ Not found in Domestic. Checking GDrive..."
-            FILE="$(rclone --config rclone.conf lsf 'gdrive1:/VS_Stock' --files-only --include "${INPUT}*" | head -n1)"
-            if [ -n "$FILE" ]; then
-                SOURCE_PATH="gdrive1:/VS_Stock"
-                echo "✅ Found in GDrive backup: $FILE"
-            else
-                echo "❌ Error: File not found in Mirror/Domestic or GDrive!"
-                exit 1
-            fi
+            echo "❌ Error: File not found in Mirror/Domestic (1drive)!"
+            # Đã bỏ phần check GDrive vì config của bạn chỉ có 1drive
+            exit 1
           fi
 
           echo "⬇️ Downloading $FILE..."
@@ -176,7 +168,7 @@ jobs:
           TARGET_IMG="rom_extracted/IMAGES/super.img"
           
           DIR_NAME="${FILE%.*}" 
-          DEST_PATH="1drive1:/Mirror/Domestic/Super/$DIR_NAME"
+          DEST_PATH="1drive:/Mirror/Domestic/Super/$DIR_NAME"
           
           echo "🚀 Checking for output file: $TARGET_IMG"
           
