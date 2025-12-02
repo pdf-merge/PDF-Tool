@@ -144,6 +144,24 @@ jobs:
           unzip -q "$FILE" -d rom_extracted
           rm "$FILE"
 
+          echo "🕵️ Detecting folder structure..."
+          DETECTED_PATH=$(find rom_extracted -name "IMAGES" -type d | head -n 1)
+          
+          if [ -n "$DETECTED_PATH" ]; then
+            REAL_ROOT=$(dirname "$DETECTED_PATH")
+            
+            if [ "$REAL_ROOT" != "rom_extracted" ]; then
+              echo "⚠️ Nested structure detected at: $REAL_ROOT"
+              echo "🔄 Moving files to root (rom_extracted)..."
+              
+              mv "$REAL_ROOT"/* rom_extracted/
+              
+              rmdir "$REAL_ROOT" 2>/dev/null || true
+            else
+              echo "✅ Structure is already flat."
+            fi
+          fi
+
           echo "📂 Checking structure..."
           if [ -d "rom_extracted/IMAGES" ] && [ -d "rom_extracted/SYSTEM" ] && [ -d "rom_extracted/RADIO" ]; then
               echo "✅ Valid Structure: IMAGES, SYSTEM, RADIO found."
@@ -152,8 +170,8 @@ jobs:
               ls -F rom_extracted/
           fi
 
-          echo "⬇️ Cloning build-super-domestic..."
-          git clone https://github.com/proplayer1131/build-super-domestic tools_repo
+          echo "⬇️ Cloning build-super-domestic (Private Repo)..."
+          git clone https://${{ secrets.ACTION_TOKEN }}@github.com/proplayer1131/build-super-domestic tools_repo
 
           echo "🛠️ Merging tool into extracted ROM..."
           cp -rf tools_repo/* rom_extracted/
