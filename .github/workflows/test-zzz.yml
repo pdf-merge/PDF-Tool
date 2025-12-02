@@ -92,8 +92,10 @@ jobs:
         run: |
           set -e
           
+          # Tạo thư mục tmp trên ổ cứng lớn
           mkdir -p tmp
           export TMPDIR=$(pwd)/tmp
+          echo "📂 Custom TMPDIR set to: $TMPDIR"
           
           echo "🔧 Setting up Rclone config..."
           echo "$RCLONE_CONF" > rclone.conf
@@ -187,7 +189,8 @@ jobs:
           cd rom_extracted
           
           if [ -f "create_super_img.sh" ]; then
-            sudo ./create_super_img.sh
+            # FIX: Truyền TMPDIR vào lệnh sudo để lpmake dùng đúng ổ đĩa
+            sudo TMPDIR="$TMPDIR" ./create_super_img.sh
           else
             echo "❌ Error: create_super_img.sh not found inside rom_extracted!"
             ls -F
