@@ -241,7 +241,8 @@ jobs:
               echo "ℹ️ Logging progress every 10 seconds..."
               
               rclone --config rclone.conf copy "$TARGET_IMG" "$DEST_PATH" \
-                --transfers=8 --checkers=16 --stats 10s
+                --transfers=8 --checkers=16 \
+                -v --stats 10s --stats-one-line
           else
               echo "❌ Error: super.img NOT found at $TARGET_IMG"
               echo "Listing contents of rom_extracted/IMAGES for debugging:"
