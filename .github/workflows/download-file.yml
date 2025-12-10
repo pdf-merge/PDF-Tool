@@ -18,6 +18,8 @@ on:
         description: 'Folder path on OneDrive'
         required: true
         default: 'Mirror'
+env:
+  TZ: Asia/Ho_Chi_Minh
 
 jobs:
   build:
@@ -25,7 +27,7 @@ jobs:
     outputs:
       message_id: ${{ steps.send_initial.outputs.message_id }}
       final_name: ${{ steps.parse.outputs.final_name }}
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -61,32 +63,59 @@ jobs:
       - name: Download, Parse Name, and Rename
         id: parse
         run: |
-          echo "Starting accelerated download as ${{ inputs.TEMP_FILE_NAME }}..."
-          aria2c -x 16 -s 16 -o "${{ inputs.TEMP_FILE_NAME }}" "${{ inputs.DOWNLOAD_URL }}"
+          TEMP_NAME="${{ inputs.TEMP_FILE_NAME }}"
+          DOWNLOAD_URL="${{ inputs.DOWNLOAD_URL }}"
           
-          echo "Attempting to extract and parse metadata..."
-          if unzip -l "${{ inputs.TEMP_FILE_NAME }}" | grep -q "META-INF/com/android/metadata"; then
-              unzip -p "${{ inputs.TEMP_FILE_NAME }}" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
-          else
-              echo "Metadata file not found inside zip."
-              echo "" > metadata_line.txt
+          echo "Starting accelerated download..."
+          aria2c -x 16 -s 16 "$DOWNLOAD_URL"
+          
+          URL_BASENAME=$(basename "$DOWNLOAD_URL" | sed 's/\?.*$//')
+          CURRENT_NAME="$URL_BASENAME"
+
+          if [ ! -f "$CURRENT_NAME" ]; then
+              FIRST_ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" -print -quit)
+              if [ -n "$FIRST_ZIP_FILE" ]; then
+                  CURRENT_NAME=$(basename "$FIRST_ZIP_FILE")
+                  echo "Warning: Downloaded file name not matching URL. Using found file: $CURRENT_NAME"
+              else
+                  echo "Error: Downloaded file not found. Exiting."
+                  exit 1
+              fi
           fi
           
-          if [ -s metadata_line.txt ]; then
-              BASE_NAME=$(cat metadata_line.txt | sed -n 's/version_name_show=\(.*\)(.*)/\1/p')
+          echo "File successfully downloaded as: $CURRENT_NAME (Original Name)"
+
+
+          if [ "$TEMP_NAME" != "download.zip" ]; then
+              FINAL_NAME="$TEMP_NAME"
+              PREFIX=""
+              echo "Using user-defined name as final name: $FINAL_NAME (Skipping metadata parsing)."
+              mv "$CURRENT_NAME" "$FINAL_NAME"
           else
+              echo "Attempting to extract and parse metadata from $CURRENT_NAME..."
+              
+              if unzip -l "$CURRENT_NAME" | grep -q "META-INF/com/android/metadata"; then
+                  unzip -p "$CURRENT_NAME" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
+              else
+                  echo "Metadata file not found inside zip."
+                  echo "" > metadata_line.txt
+              fi
+              
               BASE_NAME=""
-          fi
-          
-          PREFIX=""
-          if [ -n "$BASE_NAME" ]; then
-              FINAL_NAME="${BASE_NAME}.zip"
-              echo "Successfully parsed name. Renaming to: $FINAL_NAME"
-              mv "${{ inputs.TEMP_FILE_NAME }}" "$FINAL_NAME"
-              PREFIX=$(echo "$FINAL_NAME" | awk -F'_' '{print $1}')_
-          else
-              FINAL_NAME="${{ inputs.TEMP_FILE_NAME }}"
-              echo "Warning: Could not parse metadata. Using default name: $FINAL_NAME"
+              if [ -s metadata_line.txt ]; then
+                  BASE_NAME=$(cat metadata_line.txt | sed -n 's/version_name_show=\(.*\)(.*)/\1/p')
+              fi
+              
+              PREFIX=""
+              if [ -n "$BASE_NAME" ]; then
+                  FINAL_NAME="${BASE_NAME}.zip"
+                  echo "Successfully parsed name. Renaming '$CURRENT_NAME' to: $FINAL_NAME"
+                  mv "$CURRENT_NAME" "$FINAL_NAME"
+                  PREFIX=$(echo "$FINAL_NAME" | awk -F'_' '{print $1}')_
+              else
+                  FINAL_NAME="$CURRENT_NAME"
+                  echo "Warning: Could not parse metadata. Keeping original filename: $FINAL_NAME"
+              fi
           fi
           
           echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
@@ -136,18 +165,16 @@ jobs:
             Destination: `${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}`
           format: markdown
 
-  notify_failure:
-    runs-on: ubuntu-latest
-    needs: build
-    if: always() && needs.build.result == 'failure'
-    steps:
-      - name: Send Failure Notification
+      - name: Send Failure Notification (Build Job)
+        if: failure() && steps.upload.outcome == 'failure'
         uses: appleboy/telegram-action@master
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
-            ❌ Upload FAILED!
+            ❌ Upload FAILED in Build Job!
             
+            Workflow: ${{ github.workflow }}
+            Run ID: ${{ github.run_id }}
             Reason: Check logs for details.
           format: markdown

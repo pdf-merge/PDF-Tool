@@ -51,7 +51,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: 'proplayer1131/sachyhocpdf_downloader-main'
+          repository: 'proplayer1131/MedicalBook'
           token: ${{ secrets.ACTION_TOKEN }}
 
       - name: Set up Python
