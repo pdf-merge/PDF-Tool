@@ -1,0 +1,545 @@
+name: OTA Extract and Replace
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_type:
+        description: 'Source: URL or Cloud Drive?'
+        required: true
+        type: choice
+        default: 'url'
+        options:
+          - url
+          - onedrive
+          - gdrive
+      file_path:
+        description: 'URL (if source=url) or Filename (if source=drive) - File gốc để dump'
+        required: true
+      source_file_2_type:
+        description: 'Source file 2 (để lấy ODM/REGION/OPLUSTANVBK): URL or Cloud Drive?'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - none
+          - url
+          - onedrive
+          - gdrive
+      source_file_2_path:
+        description: 'File 2 path (để lấy ODM/REGION/OPLUSTANVBK) - để trống nếu không cần'
+        required: false
+        type: string
+      file_types:
+        description: 'Loại file cần thay (để trống sẽ tự động detect từ config)'
+        required: false
+        type: string
+      UPLOAD_TARGETS:
+        description: 'Select which directories to upload.'
+        required: true
+        type: choice
+        options:
+          - organized
+          - repacked
+          - both
+        default: 'repacked'
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  extract-and-replace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/FFF-Filer-Maker'
+          token: ${{ secrets.ACTION_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: ./dump
+        run: |
+          # Cleanup trước để tiết kiệm dung lượng
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends aria2 uuid-dev liblz4-tool jq zip
+          
+          # Cleanup apt cache sau khi cài
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          
+          python -m pip install --upgrade pip
+          pip install httpx protobuf==6.32.0 bsdiff4 enlighten zstd brotli requests
+          
+          # Cleanup pip cache
+          pip cache purge || true
+
+      - name: Configure rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          
+          # Kiểm tra secret có tồn tại không
+          if [ -z "${{ secrets.RCLONE_CONF2 }}" ]; then
+            echo "⚠️  Warning: RCLONE_CONF2 secret chưa được cấu hình"
+            echo "   Tạo file rclone.conf trống (sẽ cần cấu hình thủ công)"
+            touch ~/.config/rclone/rclone.conf
+          else
+            # Decode base64 và kiểm tra lỗi
+            if echo "${{ secrets.RCLONE_CONF2 }}" | base64 -d > ~/.config/rclone/rclone.conf 2>/dev/null; then
+              echo "✅ Rclone configured từ secret"
+            else
+              echo "❌ Lỗi: Không thể decode RCLONE_CONF2 secret"
+              echo "   Kiểm tra lại secret có phải base64 hợp lệ không"
+              echo "   Tạo file rclone.conf trống"
+              touch ~/.config/rclone/rclone.conf
+            fi
+          fi
+          
+          # Kiểm tra file config có nội dung không
+          if [ -s ~/.config/rclone/rclone.conf ]; then
+            echo "✅ Rclone config file đã được tạo"
+          else
+            echo "⚠️  Rclone config file trống - cần cấu hình thủ công"
+          fi
+
+      - name: Get ROM File
+        id: get_rom
+        run: |
+          SOURCE_TYPE="${{ github.event.inputs.source_type }}"
+          FILE_PATH="${{ github.event.inputs.file_path }}"
+          
+          # Mask file path/URL
+          echo "::add-mask::${FILE_PATH}"
+
+          RCLONE_OPTS="-P --stats 10s --multi-thread-streams=16"
+
+          if [[ "$SOURCE_TYPE" == "url" ]]; then
+            echo "Downloading from URL..."
+            aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
+
+          elif [[ "$SOURCE_TYPE" == "onedrive" ]]; then
+            echo "Copying from OneDrive..."
+            rclone copyto "1drive1:Mirror/$FILE_PATH" ./rom.zip $RCLONE_OPTS --onedrive-chunk-size=256M
+
+          elif [[ "$SOURCE_TYPE" == "gdrive" ]]; then
+            echo "Copying from Google Drive..."
+            rclone copyto "gdrive1:VS_Stock/$FILE_PATH" ./rom.zip $RCLONE_OPTS --drive-chunk-size=256M
+          
+          else
+            echo "::error::Invalid source_type selected."
+            exit 1
+          fi
+          
+          if [ ! -f rom.zip ]; then
+            echo "::error::rom.zip was not created. Check source and path."
+            exit 1
+          fi
+          echo "File rom.zip is ready."
+
+      - name: Check File 2 Input
+        run: |
+          echo "📋 Checking File 2 input..."
+          echo "   source_file_2_type: ${{ github.event.inputs.source_file_2_type }}"
+          echo "   source_file_2_path: ${{ github.event.inputs.source_file_2_path }}"
+          if [ "${{ github.event.inputs.source_file_2_type }}" == "none" ] || [ -z "${{ github.event.inputs.source_file_2_path }}" ]; then
+            echo "⚠️  File 2 không được cung cấp, sẽ skip step download file 2"
+            echo "file_2_provided=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ File 2 đã được cung cấp, sẽ tải file 2"
+            echo "file_2_provided=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Source File 2 (for ODM/REGION/OPLUSTANVBK)
+        id: get_file_2
+        if: github.event.inputs.source_file_2_type != 'none' && github.event.inputs.source_file_2_path != ''
+        run: |
+          SOURCE_TYPE_2="${{ github.event.inputs.source_file_2_type }}"
+          FILE_PATH_2="${{ github.event.inputs.source_file_2_path }}"
+          
+          echo "📋 File 2 config:"
+          echo "   Type: ${SOURCE_TYPE_2}"
+          echo "   Path: [MASKED]"
+          
+          # Mask file path/URL
+          echo "::add-mask::${FILE_PATH_2}"
+
+          RCLONE_OPTS="-P --stats 10s --multi-thread-streams=16"
+
+          # Đợi một chút trước khi tải file 2 để tránh rate limit
+          # Tăng delay lên 30 giây cho SharePoint
+          echo "⏳ Đợi 30 giây trước khi tải file 2 để tránh rate limit..."
+          sleep 30
+          
+          if [[ "$SOURCE_TYPE_2" == "url" ]]; then
+            echo "📥 Downloading file 2 from URL..."
+            
+            # Khởi tạo biến trước
+            MAX_RETRIES=5
+            DOWNLOAD_SUCCESS=false
+            
+            # Kiểm tra nếu là SharePoint URL
+            if [[ "$FILE_PATH_2" == *"sharepoint.com"* ]] || [[ "$FILE_PATH_2" == *"sharepoint"* ]]; then
+              echo "🔍 Phát hiện SharePoint URL - sử dụng chế độ đặc biệt để tránh rate limit"
+              
+              # Sử dụng curl với User-Agent và headers đặc biệt cho SharePoint
+              RETRY_COUNT=0
+              
+              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                echo "🔄 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES (SharePoint mode)..."
+                
+                # Thử dùng curl với single connection và User-Agent
+                if curl -L --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --retry 2 --retry-delay 10 --max-time 3600 -o source_file_2.zip "$FILE_PATH_2" 2>&1; then
+                  if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
+                    DOWNLOAD_SUCCESS=true
+                    break
+                  fi
+                fi
+                
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  # Tăng delay theo exponential backoff: 30s, 60s, 120s, 240s
+                  WAIT_TIME=$((30 * (2 ** (RETRY_COUNT - 1))))
+                  echo "⚠️  Download failed (HTTP 429 - Rate Limit), đợi ${WAIT_TIME} giây trước khi retry..."
+                  sleep ${WAIT_TIME}
+                  rm -f source_file_2.zip
+                fi
+              done
+              
+            else
+              # URL thông thường - dùng aria2c với ít connections hơn
+              RETRY_COUNT=0
+              
+              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                echo "🔄 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
+                # Giảm số connection xuống 1-2 để tránh rate limit
+                if aria2c -x2 -s2 -j1 --file-allocation=none --summary-interval=10 --max-tries=2 --retry-wait=15 --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -o source_file_2.zip "$FILE_PATH_2" 2>&1; then
+                  if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
+                    DOWNLOAD_SUCCESS=true
+                    break
+                  fi
+                fi
+                
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  WAIT_TIME=$((RETRY_COUNT * 20))
+                  echo "⚠️  Download failed, đợi ${WAIT_TIME} giây trước khi retry..."
+                  sleep ${WAIT_TIME}
+                  rm -f source_file_2.zip
+                fi
+              done
+            fi
+            
+            if [ "$DOWNLOAD_SUCCESS" = false ]; then
+              echo "❌ Không thể tải file 2 sau $MAX_RETRIES lần thử"
+              echo "   💡 Gợi ý: Thử lại sau vài phút hoặc sử dụng OneDrive/GDrive thay vì direct URL"
+            fi
+
+          elif [[ "$SOURCE_TYPE_2" == "onedrive" ]]; then
+            echo "📥 Copying file 2 from OneDrive..."
+            rclone copyto "1drive1:Mirror/$FILE_PATH_2" ./source_file_2.zip $RCLONE_OPTS --onedrive-chunk-size=256M || true
+
+          elif [[ "$SOURCE_TYPE_2" == "gdrive" ]]; then
+            echo "📥 Copying file 2 from Google Drive..."
+            rclone copyto "gdrive1:VS_Stock/$FILE_PATH_2" ./source_file_2.zip $RCLONE_OPTS --drive-chunk-size=256M || true
+          
+          else
+            echo "⚠️  Invalid source_file_2_type, skipping..."
+            exit 0
+          fi
+          
+          if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
+            FILE_SIZE=$(du -h source_file_2.zip | cut -f1)
+            echo "✅ File 2 is ready: source_file_2.zip (Size: ${FILE_SIZE})"
+            echo "file_2_ready=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ File 2 was not created or is empty"
+            echo "   Type: ${SOURCE_TYPE_2}"
+            echo "   Path: [MASKED]"
+            echo "   ⚠️  Workflow sẽ tiếp tục và sử dụng OneDrive fallback nếu cần"
+            echo "file_2_ready=false" >> $GITHUB_OUTPUT
+            # Xóa file rỗng nếu có
+            rm -f source_file_2.zip
+          fi
+
+      - name: Extract payload info
+        id: payload_info
+        working-directory: ./dump
+        run: |
+          python get_payload_info.py ../rom.zip -o payload_info.json || \
+          python get_payload_info.py ../rom.zip
+          
+          if [ -f payload_info.json ]; then
+            VERSION=$(python -c "import json; print(json.load(open('payload_info.json')).get('version_name', 'unknown'))")
+            PRODUCT=$(python -c "import json; print(json.load(open('payload_info.json')).get('product_name', 'unknown'))")
+            DEVICE_CODE=$(python -c "import json; d=json.load(open('payload_info.json')); print(d.get('device_code', d.get('product_name', 'unknown')))")
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "product=$PRODUCT" >> $GITHUB_OUTPUT
+            echo "device_code=$DEVICE_CODE" >> $GITHUB_OUTPUT
+            echo "✅ Version: $VERSION"
+            echo "✅ Product: $PRODUCT"
+            echo "✅ Device Code: $DEVICE_CODE"
+          else
+            echo "⚠️  Không thể lấy thông tin version"
+            echo "version=unknown" >> $GITHUB_OUTPUT
+            echo "product=unknown" >> $GITHUB_OUTPUT
+            echo "device_code=unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract payload
+        working-directory: ./dump
+        run: |
+          echo "🚀 Bắt đầu giải nén payload file gốc..."
+          python extract_payload.py ../rom.zip --out output --organized organized
+          echo "✅ Đã extract payload file gốc xong"
+          
+          # Xóa thư mục output tạm (chỉ giữ organized)
+          if [ -d output ]; then
+            rm -rf output
+            echo "🗑️  Đã xóa thư mục output tạm"
+          fi
+          
+          # Xóa file rom.zip gốc để giải phóng dung lượng cho file 2
+          if [ -f ../rom.zip ]; then
+            FILE_SIZE=$(du -h ../rom.zip | cut -f1)
+            rm -f ../rom.zip
+            echo "🗑️  Đã xóa rom.zip gốc (Size: ${FILE_SIZE}) để giải phóng dung lượng"
+          fi
+          
+          # Xóa payload_info.json nếu không cần thiết (đã lưu vào outputs rồi)
+          if [ -f payload_info.json ]; then
+            rm -f payload_info.json
+            echo "🗑️  Đã xóa payload_info.json tạm"
+          fi
+
+      - name: Extract partitions from File 2
+        id: extract_file_2
+        if: steps.get_file_2.outputs.file_2_ready == 'true'
+        working-directory: ./dump
+        run: |
+          # Kiểm tra dung lượng trước khi dump
+          echo "💾 Kiểm tra dung lượng đĩa trước khi dump file 2..."
+          df -h . | head -2
+          
+          echo "📦 Đang dump file 2 để lấy ODM/REGION/OPLUSTANVBK..."
+          python extract_payload.py ../source_file_2.zip --out output_file_2 --organized organized_file_2
+          
+          echo "✅ Đã dump file 2"
+          
+          # Xóa file zip thứ 2 để tiết kiệm dung lượng
+          if [ -f ../source_file_2.zip ]; then
+            rm -f ../source_file_2.zip
+            echo "🗑️  Đã xóa source_file_2.zip"
+          fi
+          
+          echo "file_2_extracted=true" >> $GITHUB_OUTPUT
+          
+          # Xóa thư mục output_file_2 tạm (chỉ giữ organized_file_2)
+          if [ -d output_file_2 ]; then
+            rm -rf output_file_2
+            echo "🗑️  Đã xóa thư mục output_file_2 tạm"
+          fi
+
+      - name: Copy partitions from File 2 to File 1
+        id: copy_partitions
+        if: steps.extract_file_2.outputs.file_2_extracted == 'true'
+        working-directory: ./dump
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          FILE_TYPES: ${{ github.event.inputs.file_types }}
+        run: |
+          # Chạy script Python để copy partitions
+          python3 copy_partitions_from_file2.py 2>&1 | tee copy_output.txt
+          
+          # Extract file types từ stderr output
+          FILE_TYPES_REPLACED=$(grep "FILE_TYPES_REPLACED=" copy_output.txt 2>/dev/null | tail -1 | cut -d'=' -f2)
+          if [ ! -z "$FILE_TYPES_REPLACED" ]; then
+            echo "file_types_replaced=$FILE_TYPES_REPLACED" >> $GITHUB_OUTPUT
+            echo "✅ File types đã copy: $FILE_TYPES_REPLACED"
+          else
+            # Fallback: sử dụng FILE_TYPES từ env
+            if [ ! -z "$FILE_TYPES" ]; then
+              echo "file_types_replaced=$FILE_TYPES" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Replace files from OneDrive (fallback)
+        id: replace_files
+        if: steps.copy_partitions.outputs.file_types_replaced == '' || steps.extract_file_2.outputs.file_2_extracted != 'true'
+        working-directory: ./dump
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          FILE_TYPES: ${{ github.event.inputs.file_types }}
+        run: |
+          # Chỉ chạy nếu chưa copy từ file 2
+          if [ "${{ steps.extract_file_2.outputs.file_2_extracted }}" != "true" ]; then
+            echo "🔄 Tải file từ OneDrive (không có file 2)..."
+            # Sử dụng replace_multiple_files.py để tự động detect file types từ config
+            if [ -z "$FILE_TYPES" ]; then
+              echo "🔄 Tự động detect file types từ config..."
+              python replace_multiple_files.py \
+                --organized-dir organized \
+                --device-code "$DEVICE_CODE" \
+                --version "$VERSION" > replace_output.txt 2>&1 || true
+            else
+              echo "🔄 Sử dụng file types được chỉ định: $FILE_TYPES"
+              python replace_multiple_files.py \
+                --organized-dir organized \
+                --device-code "$DEVICE_CODE" \
+                --version "$VERSION" \
+                --file-types "$FILE_TYPES" > replace_output.txt 2>&1 || true
+            fi
+            
+            # Extract file types đã thay từ output
+            if [ -f replace_output.txt ]; then
+              REPLACED_TYPES=$(grep -oE "(ODM|REGION|OPLUSTANVBK)" replace_output.txt | sort -u | tr '\n' ',' | sed 's/,$//')
+              if [ ! -z "$REPLACED_TYPES" ]; then
+                echo "file_types_replaced=$REPLACED_TYPES" >> $GITHUB_OUTPUT
+                echo "✅ File types đã thay: $REPLACED_TYPES"
+              fi
+            fi
+          else
+            echo "⏭️  Đã copy từ file 2, bỏ qua OneDrive"
+            # Sử dụng output từ copy_partitions
+            if [ ! -z "${{ steps.copy_partitions.outputs.file_types_replaced }}" ]; then
+              echo "file_types_replaced=${{ steps.copy_partitions.outputs.file_types_replaced }}" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Repack payload
+        id: repack
+        working-directory: ./dump
+        run: |
+          # Tạo tên file output dựa trên product và version
+          PRODUCT="${{ steps.payload_info.outputs.product }}"
+          VERSION="${{ steps.payload_info.outputs.version }}"
+          REPLACED_TYPES="${{ steps.replace_files.outputs.file_types_replaced }}"
+          
+          OUTPUT_NAME="${PRODUCT}-ota_full-OS${VERSION}"
+          if [ ! -z "$REPLACED_TYPES" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES}"
+          fi
+          OUTPUT_NAME="${OUTPUT_NAME}.zip"
+          
+          echo "📦 Đang đóng gói lại payload..."
+          python repack_payload.py \
+            --original-zip ../rom.zip \
+            --organized-dir organized \
+            --output "$OUTPUT_NAME" \
+            --file-types "$REPLACED_TYPES"
+          
+          if [ -f "$OUTPUT_NAME" ]; then
+            echo "output_file=$OUTPUT_NAME" >> $GITHUB_OUTPUT
+            echo "✅ Đã tạo file: $OUTPUT_NAME"
+            
+            # Xóa file zip gốc sau khi repack xong
+            if [ -f ../rom.zip ]; then
+              rm -f ../rom.zip
+              echo "🗑️  Đã xóa rom.zip"
+            fi
+            
+            # Xóa thư mục organized_file_2 sau khi copy xong (nếu có)
+            if [ -d organized_file_2 ]; then
+              rm -rf organized_file_2
+              echo "🗑️  Đã xóa thư mục organized_file_2"
+            fi
+          else
+            echo "❌ Không thể tạo file output"
+            exit 1
+          fi
+
+      - name: Set Upload Folder Name
+        id: set_folder
+        run: |
+          OUTPUT_FILE="${{ steps.repack.outputs.output_file }}"
+          
+          if [ -z "$OUTPUT_FILE" ]; then
+            echo "::error::Tên file output bị trống. Dừng lại."
+            exit 1
+          fi
+
+          FOLDER_NAME="${OUTPUT_FILE%.zip}"
+
+          echo "UPLOAD_FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
+          echo "✅ Final Upload Folder Name: $FOLDER_NAME"
+      
+      - name: Upload Dumps and Generate Link
+        env:
+          RCLONE_DEST: "1drive1:OTA_DUMPS"
+        run: |
+          INCLUDE_FLAGS=""
+          if [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "organized" ]]; then
+            INCLUDE_FLAGS="--include /dump/organized/**"
+          elif [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "repacked" ]]; then
+            INCLUDE_FLAGS="--include /dump/*.zip"
+          elif [[ "${{ github.event.inputs.UPLOAD_TARGETS }}" == "both" ]]; then
+            INCLUDE_FLAGS="--include /dump/organized/** --include /dump/*.zip"
+          fi
+          
+          FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
+          
+          # Mask remote paths
+          echo "::add-mask::${RCLONE_DEST}"
+          echo "::add-mask::${FULL_REMOTE_PATH}"
+          
+          echo "Preparing to upload..."
+          rclone copy ./dump "${FULL_REMOTE_PATH}" \
+              $INCLUDE_FLAGS \
+              --transfers=16 \
+              --checkers=32 \
+              --log-level NOTICE \
+              --stats-one-line \
+              --stats 30s
+          
+          echo "Verifying upload..."
+          FILE_COUNT=$(rclone lsf --max-depth 2 "${FULL_REMOTE_PATH}" | wc -l)
+          
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "✅ Upload confirmed."
+            UPLOAD_SIZE=$(rclone size --json --copy-links "${FULL_REMOTE_PATH}" | jq -r '.bytes' | awk '{ sum=$1 ; hum[1024**3]="GB";hum[1024**2]="MB";hum[1024]="KB"; for (x=1024**3; x>=1024; x/=1024){ if (sum>=x) { printf "%.2f %s\n",sum/x,hum[x];break } }}')
+            UPLOAD_LINK=$(rclone link "${FULL_REMOTE_PATH}")
+            if [ -z "${UPLOAD_LINK}" ]; then UPLOAD_LINK="Không thể tạo link."; fi
+          else
+            echo "❌ Error: Upload verification failed."
+            UPLOAD_SIZE="N/A"
+            UPLOAD_LINK="Tải lên thất bại."
+          fi
+          
+          # Mask upload link
+          echo "::add-mask::${UPLOAD_LINK}"
+          echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
+          echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
+          echo "BOT_OUTPUT::Link Tải=${UPLOAD_LINK}"
+
+      - name: Create summary
+        run: |
+          echo "## 📦 Kết quả giải nén và thay thế payload" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Product Name:** ${{ steps.payload_info.outputs.product }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Device Code:** ${{ steps.payload_info.outputs.device_code }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.payload_info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**File Types Replaced:** ${{ steps.replace_files.outputs.file_types_replaced || steps.copy_partitions.outputs.file_types_replaced }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Output File:** ${{ steps.repack.outputs.output_file }}" >> $GITHUB_STEP_SUMMARY
+
+    
