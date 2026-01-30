@@ -58,46 +58,31 @@ jobs:
       - name: Install dependencies
         working-directory: ./dump
         run: |
-          # Cleanup trước để tiết kiệm dung lượng
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends aria2 uuid-dev liblz4-tool jq zip
-          
-          # Cleanup apt cache sau khi cài
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          
           python -m pip install --upgrade pip
           pip install httpx protobuf==6.32.0 bsdiff4 enlighten zstd brotli requests
-          
-          # Cleanup pip cache
           pip cache purge || true
 
       - name: Configure rclone
         run: |
           curl https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          
-          # Kiểm tra secret có tồn tại không
           if [ -z "${{ secrets.RCLONE_CONF2 }}" ]; then
             echo "⚠️  Warning: RCLONE_CONF2 secret chưa được cấu hình"
-            echo "   Tạo file rclone.conf trống (sẽ cần cấu hình thủ công)"
             touch ~/.config/rclone/rclone.conf
           else
-            # Decode base64 và kiểm tra lỗi
             if echo "${{ secrets.RCLONE_CONF2 }}" | base64 -d > ~/.config/rclone/rclone.conf 2>/dev/null; then
               echo "✅ Rclone configured từ secret"
             else
               echo "❌ Lỗi: Không thể decode RCLONE_CONF2 secret"
-              echo "   Kiểm tra lại secret có phải base64 hợp lệ không"
-              echo "   Tạo file rclone.conf trống"
               touch ~/.config/rclone/rclone.conf
             fi
           fi
-          
-          # Kiểm tra file config có nội dung không
           if [ -s ~/.config/rclone/rclone.conf ]; then
             echo "✅ Rclone config file đã được tạo"
           else
@@ -109,42 +94,48 @@ jobs:
         run: |
           set -e
           FILE_PATH="${{ github.event.inputs.file_path }}"
-          
-          # Mask file path/URL
           echo "::add-mask::${FILE_PATH}"
-          
-          # Kiểm tra xem có phải URL không (bắt đầu bằng http:// hoặc https://)
           if [[ "$FILE_PATH" == http://* ]] || [[ "$FILE_PATH" == https://* ]]; then
             echo "🌐 Detected Direct URL. Downloading with aria2..."
             aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
           else
             echo "🔍 Detected Filename Prefix. Searching cloud..."
-            
-            # Tìm trong OneDrive trước
             FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH}*" | head -n1)"
             if [ -n "$FILE" ]; then
               echo "✅ Found in OneDrive: $FILE"
               SOURCE_PATH="1drive1:Mirror"
             else
-              # Tìm trong GDrive
               FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH}*" | head -n1)"
               if [ -n "$FILE" ]; then
                 echo "✅ Found in GDrive: $FILE"
                 SOURCE_PATH="gdrive1:VS_Stock"
               fi
             fi
-            
             if [ -z "$FILE" ]; then
               echo "::error::File not found in OneDrive or GDrive!"
               exit 1
             fi
-            
-            # Thử tạo direct link
             DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
             if [ -n "$DIRECT_URL" ]; then
               echo "::add-mask::$DIRECT_URL"
               echo "🚀 Direct link generated! Downloading with aria2..."
-              aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$DIRECT_URL"
+              if aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$DIRECT_URL" 2>&1; then
+                if [ ! -f rom.zip ] || [ ! -s rom.zip ]; then
+                  echo "⚠️  aria2c download failed or file is empty, falling back to rclone copy..."
+                  rm -f rom.zip
+                  rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
+                    --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                    --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                    --progress --stats 10s
+                fi
+              else
+                echo "⚠️  aria2c download failed, falling back to rclone copy..."
+                rm -f rom.zip
+                rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
+                  --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                  --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                  --progress --stats 10s
+              fi
             else
               echo "⚠️  No direct link. Falling back to rclone copy..."
               rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
@@ -171,19 +162,11 @@ jobs:
           
           echo "📋 File 2 config:"
           echo "   Path: [MASKED]"
-          
-          # Mask file path/URL
           echo "::add-mask::${FILE_PATH_2}"
-          
-          # Đợi một chút trước khi tải file 2 để tránh rate limit
           echo "⏳ Đợi 10 giây trước khi tải file 2..."
           sleep 10
-          
-          # Kiểm tra xem có phải URL không (bắt đầu bằng http:// hoặc https://)
           if [[ "$FILE_PATH_2" == http://* ]] || [[ "$FILE_PATH_2" == https://* ]]; then
             echo "🌐 Detected Direct URL for file 2..."
-            
-            # Kiểm tra nếu là SharePoint URL
             if [[ "$FILE_PATH_2" == *"sharepoint.com"* ]] || [[ "$FILE_PATH_2" == *"sharepoint"* ]]; then
               echo "🔍 Phát hiện SharePoint URL - sử dụng chế độ đặc biệt"
               MAX_RETRIES=5
@@ -222,35 +205,45 @@ jobs:
             fi
           else
             echo "🔍 Detected Filename Prefix. Searching cloud for file 2..."
-            
-            # Tìm trong OneDrive trước
             FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH_2}*" | head -n1)"
             if [ -n "$FILE" ]; then
               echo "✅ Found in OneDrive: $FILE"
               SOURCE_PATH="1drive1:Mirror"
             else
-              # Tìm trong GDrive
               FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH_2}*" | head -n1)"
               if [ -n "$FILE" ]; then
                 echo "✅ Found in GDrive: $FILE"
                 SOURCE_PATH="gdrive1:VS_Stock"
               fi
             fi
-            
             if [ -z "$FILE" ]; then
               echo "⚠️  File 2 not found in OneDrive or GDrive, skipping..."
               echo "file_2_ready=false" >> $GITHUB_OUTPUT
               exit 0
             fi
-            
-            # Thử tạo direct link
             DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
             if [ -n "$DIRECT_URL" ]; then
               echo "::add-mask::$DIRECT_URL"
               echo "🚀 Direct link generated! Downloading with aria2..."
-              aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
+              if aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
                   --max-tries=3 --retry-wait=10 \
-                  -o source_file_2.zip "$DIRECT_URL"
+                  -o source_file_2.zip "$DIRECT_URL" 2>&1; then
+                if [ ! -f source_file_2.zip ] || [ ! -s source_file_2.zip ]; then
+                  echo "⚠️  aria2c download failed or file is empty, falling back to rclone copy..."
+                  rm -f source_file_2.zip
+                  rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
+                    --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                    --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                    --progress --stats 10s || true
+                fi
+              else
+                echo "⚠️  aria2c download failed, falling back to rclone copy..."
+                rm -f source_file_2.zip
+                rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
+                  --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                  --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                  --progress --stats 10s || true
+              fi
             else
               echo "⚠️  No direct link. Falling back to rclone copy..."
               rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
@@ -301,21 +294,10 @@ jobs:
           echo "🚀 Bắt đầu giải nén payload file gốc..."
           python extract_payload.py ../rom.zip --out output --organized organized
           echo "✅ Đã extract payload file gốc xong"
-          
-          # Xóa thư mục output tạm (chỉ giữ organized)
           if [ -d output ]; then
             rm -rf output
             echo "🗑️  Đã xóa thư mục output tạm"
           fi
-          
-          # Xóa file rom.zip gốc để giải phóng dung lượng cho file 2
-          if [ -f ../rom.zip ]; then
-            FILE_SIZE=$(du -h ../rom.zip | cut -f1)
-            rm -f ../rom.zip
-            echo "🗑️  Đã xóa rom.zip gốc (Size: ${FILE_SIZE}) để giải phóng dung lượng"
-          fi
-          
-          # Xóa payload_info.json nếu không cần thiết (đã lưu vào outputs rồi)
           if [ -f payload_info.json ]; then
             rm -f payload_info.json
             echo "🗑️  Đã xóa payload_info.json tạm"
@@ -326,24 +308,16 @@ jobs:
         if: steps.get_file_2.outputs.file_2_ready == 'true'
         working-directory: ./dump
         run: |
-          # Kiểm tra dung lượng trước khi dump
           echo "💾 Kiểm tra dung lượng đĩa trước khi dump file 2..."
           df -h . | head -2
-          
           echo "📦 Đang dump file 2 để lấy ODM/REGION/OPLUSTANVBK..."
           python extract_payload.py ../source_file_2.zip --out output_file_2 --organized organized_file_2
-          
           echo "✅ Đã dump file 2"
-          
-          # Xóa file zip thứ 2 để tiết kiệm dung lượng
           if [ -f ../source_file_2.zip ]; then
             rm -f ../source_file_2.zip
             echo "🗑️  Đã xóa source_file_2.zip"
           fi
-          
           echo "file_2_extracted=true" >> $GITHUB_OUTPUT
-          
-          # Xóa thư mục output_file_2 tạm (chỉ giữ organized_file_2)
           if [ -d output_file_2 ]; then
             rm -rf output_file_2
             echo "🗑️  Đã xóa thư mục output_file_2 tạm"
@@ -358,10 +332,7 @@ jobs:
           VERSION: ${{ steps.payload_info.outputs.version }}
           FILE_TYPES: ${{ github.event.inputs.file_types }}
         run: |
-          # Chạy script Python để copy partitions
           python3 copy_partitions_from_file2.py 2>&1 | tee copy_output.txt
-          
-          # Extract file types từ stderr output
           FILE_TYPES_REPLACED=$(grep "FILE_TYPES_REPLACED=" copy_output.txt 2>/dev/null | tail -1 | cut -d'=' -f2)
           if [ ! -z "$FILE_TYPES_REPLACED" ]; then
             echo "file_types_replaced=$FILE_TYPES_REPLACED" >> $GITHUB_OUTPUT
@@ -382,10 +353,8 @@ jobs:
           VERSION: ${{ steps.payload_info.outputs.version }}
           FILE_TYPES: ${{ github.event.inputs.file_types }}
         run: |
-          # Chỉ chạy nếu chưa copy từ file 2
           if [ "${{ steps.extract_file_2.outputs.file_2_extracted }}" != "true" ]; then
             echo "🔄 Tải file từ OneDrive (không có file 2)..."
-            # Sử dụng replace_multiple_files.py để tự động detect file types từ config
             if [ -z "$FILE_TYPES" ]; then
               echo "🔄 Tự động detect file types từ config..."
               python replace_multiple_files.py \
@@ -400,8 +369,6 @@ jobs:
                 --version "$VERSION" \
                 --file-types "$FILE_TYPES" > replace_output.txt 2>&1 || true
             fi
-            
-            # Extract file types đã thay từ output
             if [ -f replace_output.txt ]; then
               REPLACED_TYPES=$(grep -oE "(ODM|REGION|OPLUSTANVBK)" replace_output.txt | sort -u | tr '\n' ',' | sed 's/,$//')
               if [ ! -z "$REPLACED_TYPES" ]; then
@@ -411,7 +378,6 @@ jobs:
             fi
           else
             echo "⏭️  Đã copy từ file 2, bỏ qua OneDrive"
-            # Sử dụng output từ copy_partitions
             if [ ! -z "${{ steps.copy_partitions.outputs.file_types_replaced }}" ]; then
               echo "file_types_replaced=${{ steps.copy_partitions.outputs.file_types_replaced }}" >> $GITHUB_OUTPUT
             fi
@@ -421,35 +387,46 @@ jobs:
         id: repack
         working-directory: ./dump
         run: |
-          # Tạo tên file output dựa trên product và version
           PRODUCT="${{ steps.payload_info.outputs.product }}"
           VERSION="${{ steps.payload_info.outputs.version }}"
           REPLACED_TYPES="${{ steps.replace_files.outputs.file_types_replaced }}"
-          
           OUTPUT_NAME="${PRODUCT}-ota_full-OS${VERSION}"
           if [ ! -z "$REPLACED_TYPES" ]; then
             OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES}"
           fi
           OUTPUT_NAME="${OUTPUT_NAME}.zip"
-          
           echo "📦 Đang đóng gói lại payload..."
           python repack_payload.py \
             --original-zip ../rom.zip \
             --organized-dir organized \
             --output "$OUTPUT_NAME" \
             --file-types "$REPLACED_TYPES"
-          
           if [ -f "$OUTPUT_NAME" ]; then
             echo "output_file=$OUTPUT_NAME" >> $GITHUB_OUTPUT
             echo "✅ Đã tạo file: $OUTPUT_NAME"
-            
-            # Xóa file zip gốc sau khi repack xong
+            echo ""
+            echo "📁 Danh sách files trong thư mục dump:"
+            echo "============================================================"
+            ls -lh *.zip 2>/dev/null || echo "Không có file .zip nào"
+            echo ""
+            echo "📊 Chi tiết file output:"
+            ls -lh "$OUTPUT_NAME"
+            echo ""
+            echo "📦 Nội dung bên trong file zip:"
+            echo "============================================================"
+            unzip -l "$OUTPUT_NAME" | head -50
+            echo ""
+            echo "📂 Cấu trúc thư mục trong zip:"
+            echo "============================================================"
+            unzip -l "$OUTPUT_NAME" | grep -E "^[ ]*[0-9]+.*/$" | head -20 || echo "Không có thư mục"
+            echo ""
+            echo "📄 Tổng số files và thư mục:"
+            unzip -l "$OUTPUT_NAME" | tail -1
+            echo "============================================================"
             if [ -f ../rom.zip ]; then
               rm -f ../rom.zip
               echo "🗑️  Đã xóa rom.zip"
             fi
-            
-            # Xóa thư mục organized_file_2 sau khi copy xong (nếu có)
             if [ -d organized_file_2 ]; then
               rm -rf organized_file_2
               echo "🗑️  Đã xóa thư mục organized_file_2"
@@ -488,11 +465,8 @@ jobs:
           fi
           
           FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
-          
-          # Mask remote paths
           echo "::add-mask::${RCLONE_DEST}"
           echo "::add-mask::${FULL_REMOTE_PATH}"
-          
           echo "Preparing to upload..."
           rclone copy ./dump "${FULL_REMOTE_PATH}" \
               $INCLUDE_FLAGS \
@@ -515,8 +489,6 @@ jobs:
             UPLOAD_SIZE="N/A"
             UPLOAD_LINK="Tải lên thất bại."
           fi
-          
-          # Mask upload link
           echo "::add-mask::${UPLOAD_LINK}"
           echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
           echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
