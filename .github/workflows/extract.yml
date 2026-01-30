@@ -484,7 +484,7 @@ jobs:
       - name: Upload Dumps and Generate Link
         working-directory: ./dump
         env:
-          RCLONE_DEST: "1drive1:OTA_DUMPS"
+          RCLONE_DEST: "1drive1:Mirror/Oxygen"
         run: |
           FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
           echo "::add-mask::${RCLONE_DEST}"
