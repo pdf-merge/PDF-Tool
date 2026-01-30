@@ -113,9 +113,8 @@ jobs:
           # Mask file path/URL
           echo "::add-mask::${FILE_PATH}"
           
-          LENGTH=${#FILE_PATH}
-          
-          if [ "$LENGTH" -gt 10 ]; then
+          # Kiểm tra xem có phải URL không (bắt đầu bằng http:// hoặc https://)
+          if [[ "$FILE_PATH" == http://* ]] || [[ "$FILE_PATH" == https://* ]]; then
             echo "🌐 Detected Direct URL. Downloading with aria2..."
             aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
           else
@@ -180,9 +179,8 @@ jobs:
           echo "⏳ Đợi 10 giây trước khi tải file 2..."
           sleep 10
           
-          LENGTH=${#FILE_PATH_2}
-          
-          if [ "$LENGTH" -gt 10 ]; then
+          # Kiểm tra xem có phải URL không (bắt đầu bằng http:// hoặc https://)
+          if [[ "$FILE_PATH_2" == http://* ]] || [[ "$FILE_PATH_2" == https://* ]]; then
             echo "🌐 Detected Direct URL for file 2..."
             
             # Kiểm tra nếu là SharePoint URL
