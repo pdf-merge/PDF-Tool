@@ -383,6 +383,36 @@ jobs:
             fi
           fi
 
+      - name: Show organized directory structure
+        working-directory: ./dump
+        run: |
+          echo ""
+          echo "📁 Cấu trúc thư mục organized:"
+          echo "============================================================"
+          if [ -d organized ]; then
+            for dir in SYSTEM BOOTLOADER CRITICAL MODEM EXTRA; do
+              if [ -d "organized/$dir" ]; then
+                echo ""
+                echo "📂 organized/$dir/"
+                echo "----------------------------------------"
+                ls -lh "organized/$dir/" | tail -n +2 | awk '{printf "  %-40s %8s\n", $9, $5}'
+                FILE_COUNT=$(find "organized/$dir" -type f | wc -l)
+                TOTAL_SIZE=$(du -sh "organized/$dir" | cut -f1)
+                echo "  → Tổng: $FILE_COUNT files, Size: $TOTAL_SIZE"
+              fi
+            done
+            echo ""
+            echo "📊 Tổng quan thư mục organized:"
+            echo "----------------------------------------"
+            du -sh organized/*/ 2>/dev/null | awk '{printf "  %-20s %s\n", $2, $1}'
+            TOTAL_FILES=$(find organized -type f | wc -l)
+            TOTAL_SIZE=$(du -sh organized | cut -f1)
+            echo "  → Tổng cộng: $TOTAL_FILES files, Total Size: $TOTAL_SIZE"
+          else
+            echo "⚠️  Thư mục organized không tồn tại"
+          fi
+          echo "============================================================"
+
       - name: Repack payload
         id: repack
         working-directory: ./dump
