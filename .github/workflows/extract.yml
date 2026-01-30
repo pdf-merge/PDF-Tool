@@ -425,6 +425,12 @@ jobs:
           REGION="${{ steps.payload_info.outputs.region }}"
           REPLACED_TYPES="${{ steps.replace_files.outputs.file_types_replaced }}"
           
+          echo "📋 Thông tin để tạo tên file:"
+          echo "   PRODUCT: $PRODUCT"
+          echo "   VERSION: $VERSION"
+          echo "   REGION: $REGION"
+          echo "   REPLACED_TYPES: $REPLACED_TYPES"
+          
           # Loại bỏ product prefix từ VERSION nếu có (ví dụ: CPH2649_ hoặc CPH2649IN_)
           if [[ "$VERSION" =~ ^${PRODUCT}_ ]]; then
             VERSION="${VERSION#${PRODUCT}_}"
@@ -432,20 +438,24 @@ jobs:
           # Loại bỏ các prefix khác có thể có (CPH2649, CPH2649IN, etc.)
           VERSION=$(echo "$VERSION" | sed -E "s/^CPH[0-9]+(IN|EU|GLB|NA|CN|JP|KR|TW|HK|SG|MY|TH|ID|PH|VN)?_?//")
           
-          # Tạo tên file: PRODUCT-ota_full-VERSION(REGION)
-          OUTPUT_NAME="${PRODUCT}-ota_full-${VERSION}"
+          OUTPUT_NAME="${PRODUCT}-ota_full-OS_${VERSION}"
           
           # Thêm region nếu có
           if [ ! -z "$REGION" ]; then
             OUTPUT_NAME="${OUTPUT_NAME}(${REGION})"
           fi
           
-          # Thêm file types đã thay nếu có
+          # Thêm file types đã thay nếu có (thay dấu phẩy thành gạch dưới)
           if [ ! -z "$REPLACED_TYPES" ]; then
-            OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES}"
+            REPLACED_TYPES_FORMATTED=$(echo "$REPLACED_TYPES" | tr ',' '_')
+            OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES_FORMATTED}"
+            echo "   ✅ Đã thêm file types: $REPLACED_TYPES_FORMATTED"
+          else
+            echo "   ⚠️  Không có file types được thay"
           fi
           
           OUTPUT_NAME="${OUTPUT_NAME}.zip"
+          echo "   📦 Tên file cuối cùng: $OUTPUT_NAME"
           echo "📦 Đang đóng gói lại payload..."
           python repack_payload.py \
             --original-zip ../rom.zip \
