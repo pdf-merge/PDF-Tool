@@ -3,30 +3,12 @@ name: OTA Extract and Replace
 on:
   workflow_dispatch:
     inputs:
-      source_type:
-        description: 'Source: URL or Cloud Drive?'
-        required: true
-        type: choice
-        default: 'url'
-        options:
-          - url
-          - onedrive
-          - gdrive
       file_path:
-        description: 'URL (if source=url) or Filename (if source=drive) - File gốc để dump'
+        description: 'URL hoặc Filename prefix - File gốc để dump (tự động phát hiện)'
         required: true
-      source_file_2_type:
-        description: 'Source file 2 (để lấy ODM/REGION/OPLUSTANVBK): URL or Cloud Drive?'
-        required: false
-        type: choice
-        default: 'none'
-        options:
-          - none
-          - url
-          - onedrive
-          - gdrive
+        type: string
       source_file_2_path:
-        description: 'File 2 path (để lấy ODM/REGION/OPLUSTANVBK) - để trống nếu không cần'
+        description: 'File 2 path (URL hoặc Filename prefix) - để trống nếu không cần'
         required: false
         type: string
       file_types:
@@ -125,90 +107,97 @@ jobs:
       - name: Get ROM File
         id: get_rom
         run: |
-          SOURCE_TYPE="${{ github.event.inputs.source_type }}"
+          set -e
           FILE_PATH="${{ github.event.inputs.file_path }}"
           
           # Mask file path/URL
           echo "::add-mask::${FILE_PATH}"
-
-          RCLONE_OPTS="-P --stats 10s --multi-thread-streams=16"
-
-          if [[ "$SOURCE_TYPE" == "url" ]]; then
-            echo "Downloading from URL..."
-            aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
-
-          elif [[ "$SOURCE_TYPE" == "onedrive" ]]; then
-            echo "Copying from OneDrive..."
-            rclone copyto "1drive1:Mirror/$FILE_PATH" ./rom.zip $RCLONE_OPTS --onedrive-chunk-size=256M
-
-          elif [[ "$SOURCE_TYPE" == "gdrive" ]]; then
-            echo "Copying from Google Drive..."
-            rclone copyto "gdrive1:VS_Stock/$FILE_PATH" ./rom.zip $RCLONE_OPTS --drive-chunk-size=256M
           
+          LENGTH=${#FILE_PATH}
+          
+          if [ "$LENGTH" -gt 10 ]; then
+            echo "🌐 Detected Direct URL. Downloading with aria2..."
+            aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
           else
-            echo "::error::Invalid source_type selected."
-            exit 1
+            echo "🔍 Detected Filename Prefix. Searching cloud..."
+            
+            # Tìm trong OneDrive trước
+            FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH}*" | head -n1)"
+            if [ -n "$FILE" ]; then
+              echo "✅ Found in OneDrive: $FILE"
+              SOURCE_PATH="1drive1:Mirror"
+            else
+              # Tìm trong GDrive
+              FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH}*" | head -n1)"
+              if [ -n "$FILE" ]; then
+                echo "✅ Found in GDrive: $FILE"
+                SOURCE_PATH="gdrive1:VS_Stock"
+              fi
+            fi
+            
+            if [ -z "$FILE" ]; then
+              echo "::error::File not found in OneDrive or GDrive!"
+              exit 1
+            fi
+            
+            # Thử tạo direct link
+            DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
+            if [ -n "$DIRECT_URL" ]; then
+              echo "::add-mask::$DIRECT_URL"
+              echo "🚀 Direct link generated! Downloading with aria2..."
+              aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$DIRECT_URL"
+            else
+              echo "⚠️  No direct link. Falling back to rclone copy..."
+              rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
+                --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                --progress --stats 10s
+            fi
           fi
           
           if [ ! -f rom.zip ]; then
             echo "::error::rom.zip was not created. Check source and path."
             exit 1
           fi
-          echo "File rom.zip is ready."
-
-      - name: Check File 2 Input
-        run: |
-          echo "📋 Checking File 2 input..."
-          echo "   source_file_2_type: ${{ github.event.inputs.source_file_2_type }}"
-          echo "   source_file_2_path: ${{ github.event.inputs.source_file_2_path }}"
-          if [ "${{ github.event.inputs.source_file_2_type }}" == "none" ] || [ -z "${{ github.event.inputs.source_file_2_path }}" ]; then
-            echo "⚠️  File 2 không được cung cấp, sẽ skip step download file 2"
-            echo "file_2_provided=false" >> $GITHUB_OUTPUT
-          else
-            echo "✅ File 2 đã được cung cấp, sẽ tải file 2"
-            echo "file_2_provided=true" >> $GITHUB_OUTPUT
-          fi
+          
+          FILE_SIZE=$(du -h rom.zip | cut -f1)
+          echo "✅ File rom.zip is ready (Size: ${FILE_SIZE})"
 
       - name: Get Source File 2 (for ODM/REGION/OPLUSTANVBK)
         id: get_file_2
-        if: github.event.inputs.source_file_2_type != 'none' && github.event.inputs.source_file_2_path != ''
+        if: github.event.inputs.source_file_2_path != ''
         run: |
-          SOURCE_TYPE_2="${{ github.event.inputs.source_file_2_type }}"
+          set -e
           FILE_PATH_2="${{ github.event.inputs.source_file_2_path }}"
           
           echo "📋 File 2 config:"
-          echo "   Type: ${SOURCE_TYPE_2}"
           echo "   Path: [MASKED]"
           
           # Mask file path/URL
           echo "::add-mask::${FILE_PATH_2}"
-
-          RCLONE_OPTS="-P --stats 10s --multi-thread-streams=16"
-
-          # Đợi một chút trước khi tải file 2 để tránh rate limit
-          # Tăng delay lên 30 giây cho SharePoint
-          echo "⏳ Đợi 30 giây trước khi tải file 2 để tránh rate limit..."
-          sleep 30
           
-          if [[ "$SOURCE_TYPE_2" == "url" ]]; then
-            echo "📥 Downloading file 2 from URL..."
-            
-            # Khởi tạo biến trước
-            MAX_RETRIES=5
-            DOWNLOAD_SUCCESS=false
+          # Đợi một chút trước khi tải file 2 để tránh rate limit
+          echo "⏳ Đợi 10 giây trước khi tải file 2..."
+          sleep 10
+          
+          LENGTH=${#FILE_PATH_2}
+          
+          if [ "$LENGTH" -gt 10 ]; then
+            echo "🌐 Detected Direct URL for file 2..."
             
             # Kiểm tra nếu là SharePoint URL
             if [[ "$FILE_PATH_2" == *"sharepoint.com"* ]] || [[ "$FILE_PATH_2" == *"sharepoint"* ]]; then
-              echo "🔍 Phát hiện SharePoint URL - sử dụng chế độ đặc biệt để tránh rate limit"
-              
-              # Sử dụng curl với User-Agent và headers đặc biệt cho SharePoint
+              echo "🔍 Phát hiện SharePoint URL - sử dụng chế độ đặc biệt"
+              MAX_RETRIES=5
               RETRY_COUNT=0
+              DOWNLOAD_SUCCESS=false
               
               while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
                 echo "🔄 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES (SharePoint mode)..."
                 
-                # Thử dùng curl với single connection và User-Agent
-                if curl -L --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --retry 2 --retry-delay 10 --max-time 3600 -o source_file_2.zip "$FILE_PATH_2" 2>&1; then
+                if curl -L --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                    --retry 2 --retry-delay 10 --max-time 3600 \
+                    -o source_file_2.zip "$FILE_PATH_2" 2>&1; then
                   if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
                     DOWNLOAD_SUCCESS=true
                     break
@@ -217,54 +206,60 @@ jobs:
                 
                 RETRY_COUNT=$((RETRY_COUNT + 1))
                 if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                  # Tăng delay theo exponential backoff: 30s, 60s, 120s, 240s
                   WAIT_TIME=$((30 * (2 ** (RETRY_COUNT - 1))))
-                  echo "⚠️  Download failed (HTTP 429 - Rate Limit), đợi ${WAIT_TIME} giây trước khi retry..."
-                  sleep ${WAIT_TIME}
-                  rm -f source_file_2.zip
-                fi
-              done
-              
-            else
-              # URL thông thường - dùng aria2c với ít connections hơn
-              RETRY_COUNT=0
-              
-              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                echo "🔄 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
-                # Giảm số connection xuống 1-2 để tránh rate limit
-                if aria2c -x2 -s2 -j1 --file-allocation=none --summary-interval=10 --max-tries=2 --retry-wait=15 --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -o source_file_2.zip "$FILE_PATH_2" 2>&1; then
-                  if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
-                    DOWNLOAD_SUCCESS=true
-                    break
-                  fi
-                fi
-                
-                RETRY_COUNT=$((RETRY_COUNT + 1))
-                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                  WAIT_TIME=$((RETRY_COUNT * 20))
                   echo "⚠️  Download failed, đợi ${WAIT_TIME} giây trước khi retry..."
                   sleep ${WAIT_TIME}
                   rm -f source_file_2.zip
                 fi
               done
+              
+              if [ "$DOWNLOAD_SUCCESS" = false ]; then
+                echo "❌ Không thể tải file 2 sau $MAX_RETRIES lần thử"
+              fi
+            else
+              echo "📥 Downloading file 2 from URL with aria2..."
+              aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
+                  --max-tries=3 --retry-wait=10 \
+                  -o source_file_2.zip "$FILE_PATH_2"
+            fi
+          else
+            echo "🔍 Detected Filename Prefix. Searching cloud for file 2..."
+            
+            # Tìm trong OneDrive trước
+            FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH_2}*" | head -n1)"
+            if [ -n "$FILE" ]; then
+              echo "✅ Found in OneDrive: $FILE"
+              SOURCE_PATH="1drive1:Mirror"
+            else
+              # Tìm trong GDrive
+              FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH_2}*" | head -n1)"
+              if [ -n "$FILE" ]; then
+                echo "✅ Found in GDrive: $FILE"
+                SOURCE_PATH="gdrive1:VS_Stock"
+              fi
             fi
             
-            if [ "$DOWNLOAD_SUCCESS" = false ]; then
-              echo "❌ Không thể tải file 2 sau $MAX_RETRIES lần thử"
-              echo "   💡 Gợi ý: Thử lại sau vài phút hoặc sử dụng OneDrive/GDrive thay vì direct URL"
+            if [ -z "$FILE" ]; then
+              echo "⚠️  File 2 not found in OneDrive or GDrive, skipping..."
+              echo "file_2_ready=false" >> $GITHUB_OUTPUT
+              exit 0
             fi
-
-          elif [[ "$SOURCE_TYPE_2" == "onedrive" ]]; then
-            echo "📥 Copying file 2 from OneDrive..."
-            rclone copyto "1drive1:Mirror/$FILE_PATH_2" ./source_file_2.zip $RCLONE_OPTS --onedrive-chunk-size=256M || true
-
-          elif [[ "$SOURCE_TYPE_2" == "gdrive" ]]; then
-            echo "📥 Copying file 2 from Google Drive..."
-            rclone copyto "gdrive1:VS_Stock/$FILE_PATH_2" ./source_file_2.zip $RCLONE_OPTS --drive-chunk-size=256M || true
-          
-          else
-            echo "⚠️  Invalid source_file_2_type, skipping..."
-            exit 0
+            
+            # Thử tạo direct link
+            DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
+            if [ -n "$DIRECT_URL" ]; then
+              echo "::add-mask::$DIRECT_URL"
+              echo "🚀 Direct link generated! Downloading with aria2..."
+              aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
+                  --max-tries=3 --retry-wait=10 \
+                  -o source_file_2.zip "$DIRECT_URL"
+            else
+              echo "⚠️  No direct link. Falling back to rclone copy..."
+              rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
+                --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                --progress --stats 10s || true
+            fi
           fi
           
           if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
@@ -273,11 +268,8 @@ jobs:
             echo "file_2_ready=true" >> $GITHUB_OUTPUT
           else
             echo "❌ File 2 was not created or is empty"
-            echo "   Type: ${SOURCE_TYPE_2}"
-            echo "   Path: [MASKED]"
             echo "   ⚠️  Workflow sẽ tiếp tục và sử dụng OneDrive fallback nếu cần"
             echo "file_2_ready=false" >> $GITHUB_OUTPUT
-            # Xóa file rỗng nếu có
             rm -f source_file_2.zip
           fi
 
