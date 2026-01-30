@@ -275,12 +275,15 @@ jobs:
             VERSION=$(python -c "import json; print(json.load(open('payload_info.json')).get('version_name', 'unknown'))")
             PRODUCT=$(python -c "import json; print(json.load(open('payload_info.json')).get('product_name', 'unknown'))")
             DEVICE_CODE=$(python -c "import json; d=json.load(open('payload_info.json')); print(d.get('device_code', d.get('product_name', 'unknown')))")
+            REGION=$(python -c "import json; print(json.load(open('payload_info.json')).get('region', ''))" || echo "")
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "product=$PRODUCT" >> $GITHUB_OUTPUT
             echo "device_code=$DEVICE_CODE" >> $GITHUB_OUTPUT
+            echo "region=$REGION" >> $GITHUB_OUTPUT
             echo "✅ Version: $VERSION"
             echo "✅ Product: $PRODUCT"
             echo "✅ Device Code: $DEVICE_CODE"
+            echo "✅ Region: ${REGION:-N/A}"
           else
             echo "⚠️  Không thể lấy thông tin version"
             echo "version=unknown" >> $GITHUB_OUTPUT
@@ -419,11 +422,29 @@ jobs:
         run: |
           PRODUCT="${{ steps.payload_info.outputs.product }}"
           VERSION="${{ steps.payload_info.outputs.version }}"
+          REGION="${{ steps.payload_info.outputs.region }}"
           REPLACED_TYPES="${{ steps.replace_files.outputs.file_types_replaced }}"
-          OUTPUT_NAME="${PRODUCT}-ota_full-OS${VERSION}"
+          
+          # Loại bỏ product prefix từ VERSION nếu có (ví dụ: CPH2649_ hoặc CPH2649IN_)
+          if [[ "$VERSION" =~ ^${PRODUCT}_ ]]; then
+            VERSION="${VERSION#${PRODUCT}_}"
+          fi
+          # Loại bỏ các prefix khác có thể có (CPH2649, CPH2649IN, etc.)
+          VERSION=$(echo "$VERSION" | sed -E "s/^CPH[0-9]+(IN|EU|GLB|NA|CN|JP|KR|TW|HK|SG|MY|TH|ID|PH|VN)?_?//")
+          
+          # Tạo tên file: PRODUCT-ota_full-VERSION(REGION)
+          OUTPUT_NAME="${PRODUCT}-ota_full-${VERSION}"
+          
+          # Thêm region nếu có
+          if [ ! -z "$REGION" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}(${REGION})"
+          fi
+          
+          # Thêm file types đã thay nếu có
           if [ ! -z "$REPLACED_TYPES" ]; then
             OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES}"
           fi
+          
           OUTPUT_NAME="${OUTPUT_NAME}.zip"
           echo "📦 Đang đóng gói lại payload..."
           python repack_payload.py \
