@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       quality:
-        description: 'Mức nén: Manh=file nhỏ nhất (72dpi) | TrungBinh=cân bằng (150dpi) | Vua=chất lượng cao (300dpi)'
+        description: 'Mức nén: Manh=file nhỏ nhất (96dpi) | TrungBinh=cân bằng (150dpi) | Vua=chất lượng cao (200dpi)'
         required: true
         type: choice
         default: 'TrungBinh'
@@ -16,6 +16,14 @@ on:
           - Manh
           - TrungBinh
           - Vua
+      re_ocr:
+        description: 'OCR lại sau khi nén? (Có = giữ được copy chữ, lâu hơn)'
+        required: true
+        type: choice
+        default: 'Co'
+        options:
+          - Co
+          - Khong
 
 jobs:
   compress-pdf:
@@ -28,9 +36,17 @@ jobs:
       - name: 1. Install Dependencies
         run: |
           sudo apt-get update
-          echo "Installing dependencies (rclone, ghostscript, exiftool)..."
-          sudo apt-get install -y \
-            rclone ghostscript exiftool
+          echo "Installing base dependencies..."
+          sudo apt-get install -y rclone ghostscript exiftool
+
+          if [ "${{ inputs.re_ocr }}" == "Co" ]; then
+            echo "Installing OCR dependencies..."
+            sudo apt-get install -y \
+              python3-pip \
+              tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+              libopenjp2-7 ghostscript
+            pip install ocrmypdf
+          fi
 
       - name: 2. Configure Rclone
         run: |
@@ -54,7 +70,6 @@ jobs:
           ORIGINAL_SIZE=$(du -sh "${{ inputs.file_name }}" | cut -f1)
           echo "Found: ${{ inputs.file_name }} ($ORIGINAL_SIZE)"
 
-          # Build output file name: BaseName_Compress_Quality.pdf
           BASE_NAME=$(echo "${{ inputs.file_name }}" | sed 's/\.pdf$//')
           OUTPUT_FILE="${BASE_NAME}_Compress_${{ inputs.quality }}.pdf"
 
@@ -65,7 +80,6 @@ jobs:
         run: |
           cd workspace
 
-          # Map quality label to image resolution (only images are downsampled, text/OCR layer is preserved)
           case "${{ inputs.quality }}" in
             Manh)      IMG_RES=96  ;;
             TrungBinh) IMG_RES=150 ;;
@@ -75,7 +89,7 @@ jobs:
           INPUT="${{ inputs.file_name }}"
           OUTPUT="${{ env.OUTPUT_FILE }}"
 
-          echo "Compressing images to ${IMG_RES}dpi, preserving text/OCR layer: '$INPUT' → '$OUTPUT'..."
+          echo "Compressing images to ${IMG_RES}dpi: '$INPUT' → '$OUTPUT'..."
 
           gs \
             -sDEVICE=pdfwrite \
@@ -95,7 +109,6 @@ jobs:
             -dSubsetFonts=true \
             -dEmbedAllFonts=true \
             -dDetectDuplicateImages=true \
-            -dPreserveAnnots=true \
             -sOutputFile="$OUTPUT" \
             "$INPUT"
 
@@ -104,14 +117,36 @@ jobs:
             exit 1
           fi
 
-          NEW_SIZE=$(du -sh "$OUTPUT" | cut -f1)
-          echo "Compression complete. New size: $NEW_SIZE"
-          echo "NEW_SIZE=$NEW_SIZE" >> $GITHUB_ENV
+          COMPRESSED_SIZE=$(du -sh "$OUTPUT" | cut -f1)
+          echo "Ghostscript done. Size after compress: $COMPRESSED_SIZE"
+          echo "COMPRESSED_SIZE=$COMPRESSED_SIZE" >> $GITHUB_ENV
 
-      - name: 5. Force PDF Metadata
+      - name: 5. Re-OCR after Compression
+        if: inputs.re_ocr == 'Co'
         run: |
           cd workspace
-          echo "Updating metadata for ${{ env.OUTPUT_FILE }}..."
+          OUTPUT="${{ env.OUTPUT_FILE }}"
+          TEMP_OCR="ocr_$OUTPUT"
+
+          echo "Running OCR on compressed file: '$OUTPUT'..."
+          ocrmypdf \
+            --language "vie+eng" \
+            --force-ocr \
+            --output-type pdf \
+            "$OUTPUT" \
+            "$TEMP_OCR"
+
+          if [ $? -ne 0 ]; then
+            echo "::error::OCRmyPDF failed"
+            exit 1
+          fi
+
+          mv "$TEMP_OCR" "$OUTPUT"
+          echo "OCR complete."
+
+      - name: 6. Force PDF Metadata
+        run: |
+          cd workspace
           exiftool -Title="LSC" \
                    -Author="LSC" \
                    -Subject="LSC" \
@@ -119,31 +154,38 @@ jobs:
                    -Producer="LSC" \
                    -overwrite_original \
                    "${{ env.OUTPUT_FILE }}"
-          echo "Metadata update complete."
 
-      - name: 6. Upload to LSC_Merged/Compress
+      - name: 7. Upload to LSC_Merged/Compress
         run: |
           cd workspace
+          NEW_SIZE=$(du -sh "${{ env.OUTPUT_FILE }}" | cut -f1)
+          echo "NEW_SIZE=$NEW_SIZE" >> $GITHUB_ENV
+
           echo "Uploading '${{ env.OUTPUT_FILE }}' to $DEST_PATH..."
           rclone copy "${{ env.OUTPUT_FILE }}" "$DEST_PATH"
           if [ $? -ne 0 ]; then echo "::error::Failed to upload compressed PDF"; exit 1; fi
           echo "Upload complete."
 
-      - name: 7. Create Artifact for Bot
+      - name: 8. Create Artifact for Bot
         run: |
           cd workspace
           NEW_LINK=$(rclone link "$DEST_PATH/${{ env.OUTPUT_FILE }}")
           BOOK_NAME=$(echo "${{ inputs.file_name }}" | sed 's/\.pdf$//' | tr '_' ' ')
 
-          echo "✅ *Nén PDF Thành Công*\n\n" > artifact.txt
+          if [ "${{ inputs.re_ocr }}" == "Co" ]; then
+            echo "✅ *Nén + OCR Thành Công*\n\n" > artifact.txt
+          else
+            echo "✅ *Nén PDF Thành Công*\n\n" > artifact.txt
+          fi
+
           echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
           echo "📦 *Kích thước gốc:* ${{ env.ORIGINAL_SIZE }}\n" >> artifact.txt
-          echo "📉 *Kích thước sau nén:* ${{ env.NEW_SIZE }}\n" >> artifact.txt
-          echo "⚙️ *Mức nén:* ${{ inputs.quality }}\n" >> artifact.txt
-          echo "📄 *Tên file mới:* \`${{ env.OUTPUT_FILE }}\`\n" >> artifact.txt
+          echo "📉 *Sau nén (GS):* ${{ env.COMPRESSED_SIZE }}\n" >> artifact.txt
+          echo "📄 *Kích thước cuối:* ${{ env.NEW_SIZE }}\n" >> artifact.txt
+          echo "⚙️ *Mức nén:* ${{ inputs.quality }} | OCR lại: ${{ inputs.re_ocr }}\n" >> artifact.txt
           echo "🔗 *Link Tải:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
 
-      - name: 8. Upload Artifact
+      - name: 9. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: bot-message
