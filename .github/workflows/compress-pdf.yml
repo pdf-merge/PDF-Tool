@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       quality:
-        description: 'Mức nén (Manh=72dpi | TrungBinh=150dpi | Vua=300dpi)'
+        description: 'Mức nén: Manh=file nhỏ nhất (72dpi) | TrungBinh=cân bằng (150dpi) | Vua=chất lượng cao (300dpi)'
         required: true
         type: choice
         default: 'TrungBinh'
@@ -65,25 +65,37 @@ jobs:
         run: |
           cd workspace
 
-          # Map Vietnamese quality label to Ghostscript setting
+          # Map quality label to image resolution (only images are downsampled, text/OCR layer is preserved)
           case "${{ inputs.quality }}" in
-            Manh)      GS_QUALITY="screen"  ;;
-            TrungBinh) GS_QUALITY="ebook"   ;;
-            Vua)       GS_QUALITY="printer" ;;
+            Manh)      IMG_RES=96  ;;
+            TrungBinh) IMG_RES=150 ;;
+            Vua)       IMG_RES=200 ;;
           esac
 
           INPUT="${{ inputs.file_name }}"
           OUTPUT="${{ env.OUTPUT_FILE }}"
 
-          echo "Compressing '$INPUT' → '$OUTPUT' (gs: $GS_QUALITY)..."
+          echo "Compressing images to ${IMG_RES}dpi, preserving text/OCR layer: '$INPUT' → '$OUTPUT'..."
 
           gs \
             -sDEVICE=pdfwrite \
-            -dCompatibilityLevel=1.4 \
-            -dPDFSETTINGS=/$GS_QUALITY \
+            -dCompatibilityLevel=1.5 \
             -dNOPAUSE \
             -dQUIET \
             -dBATCH \
+            -dDownsampleColorImages=true \
+            -dColorImageDownsampleType=/Bicubic \
+            -dColorImageResolution=$IMG_RES \
+            -dDownsampleGrayImages=true \
+            -dGrayImageDownsampleType=/Bicubic \
+            -dGrayImageResolution=$IMG_RES \
+            -dDownsampleMonoImages=true \
+            -dMonoImageResolution=$IMG_RES \
+            -dCompressFonts=true \
+            -dSubsetFonts=true \
+            -dEmbedAllFonts=true \
+            -dDetectDuplicateImages=true \
+            -dPreserveAnnots=true \
             -sOutputFile="$OUTPUT" \
             "$INPUT"
 
