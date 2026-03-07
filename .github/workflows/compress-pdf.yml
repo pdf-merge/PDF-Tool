@@ -8,20 +8,21 @@ on:
         required: true
         type: string
       quality:
-        description: 'Compression quality (screen=72dpi | ebook=150dpi | printer=300dpi)'
+        description: 'Mức nén (Manh=72dpi | TrungBinh=150dpi | Vua=300dpi)'
         required: true
         type: choice
-        default: 'ebook'
+        default: 'TrungBinh'
         options:
-          - screen
-          - ebook
-          - printer
+          - Manh
+          - TrungBinh
+          - Vua
 
 jobs:
   compress-pdf:
     runs-on: ubuntu-latest
     env:
-      REMOTE_PATH: "1drive:LSC_Merged"
+      SOURCE_PATH: "1drive:LSC_Merged"
+      DEST_PATH: "1drive:LSC_Merged/Compress"
 
     steps:
       - name: 1. Install Dependencies
@@ -41,37 +42,49 @@ jobs:
           mkdir -p workspace
           cd workspace
 
-          echo "Downloading '${{ inputs.file_name }}' from $REMOTE_PATH..."
-          rclone copy "$REMOTE_PATH/${{ inputs.file_name }}" .
-          if [ $? -ne 0 ]; then echo "::error::Failed to download '${{ inputs.file_name }}' from $REMOTE_PATH"; exit 1; fi
+          echo "Downloading '${{ inputs.file_name }}' from $SOURCE_PATH..."
+          rclone copy "$SOURCE_PATH/${{ inputs.file_name }}" .
+          if [ $? -ne 0 ]; then echo "::error::Failed to download '${{ inputs.file_name }}' from $SOURCE_PATH"; exit 1; fi
 
           if [ ! -f "${{ inputs.file_name }}" ]; then
-            echo "::error::File '${{ inputs.file_name }}' not found in $REMOTE_PATH"
+            echo "::error::File '${{ inputs.file_name }}' not found in $SOURCE_PATH"
             exit 1
           fi
 
           ORIGINAL_SIZE=$(du -sh "${{ inputs.file_name }}" | cut -f1)
           echo "Found: ${{ inputs.file_name }} ($ORIGINAL_SIZE)"
 
+          # Build output file name: BaseName_Compress_Quality.pdf
+          BASE_NAME=$(echo "${{ inputs.file_name }}" | sed 's/\.pdf$//')
+          OUTPUT_FILE="${BASE_NAME}_Compress_${{ inputs.quality }}.pdf"
+
           echo "ORIGINAL_SIZE=$ORIGINAL_SIZE" >> $GITHUB_ENV
+          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
 
       - name: 4. Compress PDF with Ghostscript
         run: |
           cd workspace
-          QUALITY="${{ inputs.quality }}"
-          INPUT="${{ inputs.file_name }}"
-          TEMP_FILE="compressed_$INPUT"
 
-          echo "Compressing '$INPUT' with quality: $QUALITY..."
+          # Map Vietnamese quality label to Ghostscript setting
+          case "${{ inputs.quality }}" in
+            Manh)      GS_QUALITY="screen"  ;;
+            TrungBinh) GS_QUALITY="ebook"   ;;
+            Vua)       GS_QUALITY="printer" ;;
+          esac
+
+          INPUT="${{ inputs.file_name }}"
+          OUTPUT="${{ env.OUTPUT_FILE }}"
+
+          echo "Compressing '$INPUT' → '$OUTPUT' (gs: $GS_QUALITY)..."
 
           gs \
             -sDEVICE=pdfwrite \
             -dCompatibilityLevel=1.4 \
-            -dPDFSETTINGS=/$QUALITY \
+            -dPDFSETTINGS=/$GS_QUALITY \
             -dNOPAUSE \
             -dQUIET \
             -dBATCH \
-            -sOutputFile="$TEMP_FILE" \
+            -sOutputFile="$OUTPUT" \
             "$INPUT"
 
           if [ $? -ne 0 ]; then
@@ -79,45 +92,44 @@ jobs:
             exit 1
           fi
 
-          mv "$TEMP_FILE" "$INPUT"
-
-          NEW_SIZE=$(du -sh "$INPUT" | cut -f1)
+          NEW_SIZE=$(du -sh "$OUTPUT" | cut -f1)
           echo "Compression complete. New size: $NEW_SIZE"
           echo "NEW_SIZE=$NEW_SIZE" >> $GITHUB_ENV
 
       - name: 5. Force PDF Metadata
         run: |
           cd workspace
-          echo "Updating metadata for ${{ inputs.file_name }}..."
+          echo "Updating metadata for ${{ env.OUTPUT_FILE }}..."
           exiftool -Title="LSC" \
                    -Author="LSC" \
                    -Subject="LSC" \
                    -Creator="LSC" \
                    -Producer="LSC" \
                    -overwrite_original \
-                   "${{ inputs.file_name }}"
+                   "${{ env.OUTPUT_FILE }}"
           echo "Metadata update complete."
 
-      - name: 6. Upload Result (overwrite original)
+      - name: 6. Upload to LSC_Merged/Compress
         run: |
           cd workspace
-          echo "Uploading '${{ inputs.file_name }}' back to $REMOTE_PATH (overwriting original)..."
-          rclone copy "${{ inputs.file_name }}" "$REMOTE_PATH"
+          echo "Uploading '${{ env.OUTPUT_FILE }}' to $DEST_PATH..."
+          rclone copy "${{ env.OUTPUT_FILE }}" "$DEST_PATH"
           if [ $? -ne 0 ]; then echo "::error::Failed to upload compressed PDF"; exit 1; fi
           echo "Upload complete."
 
       - name: 7. Create Artifact for Bot
         run: |
           cd workspace
-          NEW_LINK=$(rclone link "$REMOTE_PATH/${{ inputs.file_name }}")
+          NEW_LINK=$(rclone link "$DEST_PATH/${{ env.OUTPUT_FILE }}")
           BOOK_NAME=$(echo "${{ inputs.file_name }}" | sed 's/\.pdf$//' | tr '_' ' ')
 
           echo "✅ *Nén PDF Thành Công*\n\n" > artifact.txt
           echo "🆔 *Sách:* \`$BOOK_NAME\`\n" >> artifact.txt
           echo "📦 *Kích thước gốc:* ${{ env.ORIGINAL_SIZE }}\n" >> artifact.txt
           echo "📉 *Kích thước sau nén:* ${{ env.NEW_SIZE }}\n" >> artifact.txt
-          echo "⚙️ *Chất lượng:* ${{ inputs.quality }}\n" >> artifact.txt
-          echo "🔗 *Link Tải Mới:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
+          echo "⚙️ *Mức nén:* ${{ inputs.quality }}\n" >> artifact.txt
+          echo "📄 *Tên file mới:* \`${{ env.OUTPUT_FILE }}\`\n" >> artifact.txt
+          echo "🔗 *Link Tải:* [Nhấn vào đây]($NEW_LINK)" >> artifact.txt
 
       - name: 8. Upload Artifact
         uses: actions/upload-artifact@v4
