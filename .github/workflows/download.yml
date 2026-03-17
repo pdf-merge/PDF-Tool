@@ -87,13 +87,18 @@ jobs:
           cd ..
           echo "OCR dependencies installed."
 
-      - name: Configure Rclone
-        env:
-          RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
+      - name: Setup rclone (base64)
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          printf "%s" "$RCLONE_CONF_CONTENTS" > ~/.config/rclone/rclone.conf
+          echo "${{ secrets.RCLONE_CONF_BASE641 }}" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: Debug rclone
+        run: |
+          echo "==== CONFIG ===="
+          cat ~/.config/rclone/rclone.conf
+          echo "==== REMOTES ===="
+          rclone listremotes
 
       - name: Set Main Upload Destination (for exist-check)
         id: set_destination
