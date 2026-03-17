@@ -88,10 +88,12 @@ jobs:
           echo "OCR dependencies installed."
 
       - name: Setup rclone (base64)
+        env:
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF_BASE641 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: Debug rclone
         run: |
