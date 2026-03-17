@@ -158,7 +158,7 @@ jobs:
         id: upload_no_ocr
         if: steps.metadata_pass_1.conclusion == 'success'
         env:
-          RCLONE_DEST_PATH: "1drive:/LSC_Books/No_OCR"
+          RCLONE_DEST_PATH: "1drive1:/LSC_Books/No_OCR"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
@@ -230,7 +230,7 @@ jobs:
         id: upload_ocr
         if: steps.metadata_pass_2.conclusion == 'success' && env.PERFORM_OCR == 'yes'
         env:
-          RCLONE_DEST_PATH: "1drive:/LSC_Books"
+          RCLONE_DEST_PATH: "1drive1:/LSC_Books"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
