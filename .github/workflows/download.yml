@@ -97,8 +97,6 @@ jobs:
 
       - name: Debug rclone
         run: |
-          echo "==== CONFIG ===="
-          cat ~/.config/rclone/rclone.conf
           echo "==== REMOTES ===="
           rclone listremotes
 
