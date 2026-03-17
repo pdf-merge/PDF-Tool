@@ -89,7 +89,7 @@ jobs:
 
       - name: Configure Rclone
         env:
-          RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF }}
+          RCLONE_CONF_CONTENTS: ${{ secrets.RCLONE_CONF2 }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
