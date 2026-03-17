@@ -99,7 +99,7 @@ jobs:
         id: set_destination
         run: |
           # This path is used by the Python script to check if a book exists
-          echo "RCLONE_DEST_PATH=1drive:/LSC_Books" >> $GITHUB_ENV
+          echo "RCLONE_DEST_PATH=1drive1:/LSC_Books" >> $GITHUB_ENV
           echo "Main check destination set to: 1drive:/LSC_Books"
 
       - name: Run Intelligent Download Script
