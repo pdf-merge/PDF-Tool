@@ -1,0 +1,83 @@
+name: "Extract OTA Metadata + Telegram"
+
+on:
+  workflow_dispatch:
+    inputs:
+      DOWNLOAD_URL:
+        description: 'Direct Download Link (to .zip file)'
+        required: true
+      TEMP_FILE_NAME:
+        description: 'Temporary name (optional)'
+        required: false
+        default: 'download.zip'
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip aria2
+
+      - name: Download and Parse Metadata
+        id: parse
+        run: |
+          DOWNLOAD_URL="${{ inputs.DOWNLOAD_URL }}"
+          TEMP_NAME="${{ inputs.TEMP_FILE_NAME }}"
+
+          echo "Downloading OTA..."
+          aria2c -x 16 -s 16 "$DOWNLOAD_URL"
+
+          URL_BASENAME=$(basename "$DOWNLOAD_URL" | sed 's/\?.*$//')
+          CURRENT_NAME="$URL_BASENAME"
+
+          if [ ! -f "$CURRENT_NAME" ]; then
+              FILE=$(find . -maxdepth 1 -name "*.zip" -print -quit)
+              if [ -n "$FILE" ]; then
+                  CURRENT_NAME=$(basename "$FILE")
+              else
+                  echo "❌ File not found"
+                  exit 1
+              fi
+          fi
+
+          echo "Downloaded: $CURRENT_NAME"
+
+          # Extract metadata
+          METADATA=$(unzip -p "$CURRENT_NAME" META-INF/com/android/metadata 2>/dev/null || true)
+
+          # Parse filename
+          BASE_NAME=$(echo "$METADATA" | grep 'version_name_show=' | sed -n 's/version_name_show=\(.*\)(.*)/\1/p')
+
+          if [ -n "$BASE_NAME" ]; then
+              FINAL_NAME="${BASE_NAME}.zip"
+          else
+              FINAL_NAME="$CURRENT_NAME"
+          fi
+
+          # Parse project number
+          PROJECT_NUM=$(echo "$METADATA" | grep 'oplus_project_numbers=' | cut -d= -f2 | cut -d',' -f1 | tr -d '\r')
+
+          if [ -z "$PROJECT_NUM" ]; then
+              PROJECT_NUM="UNKNOWN"
+          fi
+
+          echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
+          echo "project_num=$PROJECT_NUM" >> $GITHUB_OUTPUT
+
+      - name: Send Telegram Result
+        uses: appleboy/telegram-action@master
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: |
+            ✅ Process successful!
+
+            File: `${{ steps.parse.outputs.final_name }}`
+            Project: `${{ steps.parse.outputs.project_num }}`
+          format: markdown
