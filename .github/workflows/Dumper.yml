@@ -189,15 +189,7 @@ jobs:
           copy_file "my_stock/priv-app/Wallpapers/Wallpapers.apk"                                 "Wallpapers.apk"
           copy_file "my_stock/app/OppoWeatherService/OppoWeatherService.apk"                      "OppoWeatherService.apk"
           copy_file "my_stock/priv-app/dmp/dmp.apk"                                               "dmp.apk"
-          copy_file "product/overlay/hypervs.OTA_bg.apk"                                          "hypervs.OTA_bg.apk"
-          copy_file "product/overlay/hypervs.OTA_bgotp.apk"                                       "hypervs.OTA_bgotp.apk"
-          copy_file "vendor/lib64/libhotword_intf.so"                                              "libhotword_intf.so"
-          copy_file "system_ext/oplus/sys_multi_app_black_list.xml"                               "sys_multi_app_black_list.xml"
 
-          copy_file "my_product/etc/launcher/default_workspace.xml"                               "launcher/default_workspace.xml"
-          copy_file "my_product/etc/launcher/default_workspace_simple.xml"                        "launcher/default_workspace_simple.xml"
-          copy_file "my_product/cust/ID/etc/launcher/default_workspace.xml"                       "launcher/ID/default_workspace.xml"
-          copy_file "my_product/cust/RU/etc/launcher/default_workspace.xml"                       "launcher/RU/default_workspace.xml"
 
           echo ""
           echo "📦 Staged $(find $STAGING -type f | wc -l) files."
