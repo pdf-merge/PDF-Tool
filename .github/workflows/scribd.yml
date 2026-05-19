@@ -45,7 +45,7 @@ jobs:
       env:
         RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
       run: |
-        sudo apt-get update && sudo apt-get install -y rclone
+        sudo apt-get update && sudo apt-get install -y rclone libjpeg-dev zlib1g-dev libfreetype6-dev
         mkdir -p ~/.config/rclone
         echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
 

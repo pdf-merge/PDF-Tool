@@ -67,7 +67,10 @@ jobs:
           sudo apt-get install -y \
             git python3-tk jq exiftool \
             ghostscript qpdf \
-            libopenjp2-7 libffi-dev libssl-dev
+            libopenjp2-7 libffi-dev libssl-dev \
+            libjpeg-dev \
+            zlib1g-dev \
+            libfreetype6-dev
           python -m pip install -U pip
           pip install requests Pillow psutil
           if [ -f requirements.txt ]; then
