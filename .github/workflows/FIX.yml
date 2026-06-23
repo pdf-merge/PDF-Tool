@@ -1,4 +1,4 @@
-name: OTA Extract and Replace
+name: OTA MAKE
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       file_types:
-        description: 'Loại partition lấy từ ROM gốc (ACE 5: ODM; để trống sẽ tự nhận)'
+        description: 'ODM hoặc REGION,OPLUSTANVBK (= SIGNAL); để trống sẽ tự nhận'
         required: false
         type: string
       UPLOAD_TARGETS:
@@ -46,8 +46,7 @@ jobs:
       - name: Checkout FFF tool repository
         uses: actions/checkout@v4
         with:
-          repository: proplayer1131/FFF_2026
-          ref: main
+          repository: 'proplayer1131/FFF_2026'
           token: ${{ secrets.ACTION_TOKEN }}
 
       - name: Set up Python
@@ -60,6 +59,8 @@ jobs:
           test -f dump/pyproject.toml
           test -f dump/extract_payload.py
           test -f dump/copy_partitions_from_file2.py
+          test -f dump/resolve_download_url.py
+          test -f dump/build_output_name.py
           echo "✅ FFF tool files are ready"
 
       - name: Install dependencies
@@ -101,18 +102,7 @@ jobs:
           echo "::add-mask::${FILE_PATH}"
           if [[ "$FILE_PATH" == http://* ]] || [[ "$FILE_PATH" == https://* ]]; then
             echo "🌐 Detected Direct URL. Downloading with aria2..."
-            DOWNLOAD_URL="$FILE_PATH"
-            if [[ "$FILE_PATH" == *"/downloadCheck?"* ]]; then
-              DOWNLOAD_URL=$(curl -fsSI \
-                -H "userid: oplus-ota|" \
-                -H "User-Agent: Mozilla/5.0" \
-                "$FILE_PATH" \
-                | awk 'BEGIN{IGNORECASE=1} /^location:/ {$1=""; sub(/^ /,""); sub(/\r$/,""); print; exit}')
-              if [ -z "$DOWNLOAD_URL" ]; then
-                echo "::error::Link OPlus đã hết hạn hoặc không trả về URL ZIP"
-                exit 1
-              fi
-            fi
+            DOWNLOAD_URL=$(python dump/resolve_download_url.py "$FILE_PATH")
             echo "::add-mask::$DOWNLOAD_URL"
             aria2c -x16 -s16 -j5 --file-allocation=none \
               --summary-interval=10 -o rom.zip "$DOWNLOAD_URL"
@@ -215,18 +205,7 @@ jobs:
               fi
             else
               echo "📥 Downloading file 2 from URL with aria2..."
-              DOWNLOAD_URL="$FILE_PATH_2"
-              if [[ "$FILE_PATH_2" == *"/downloadCheck?"* ]]; then
-                DOWNLOAD_URL=$(curl -fsSI \
-                  -H "userid: oplus-ota|" \
-                  -H "User-Agent: Mozilla/5.0" \
-                  "$FILE_PATH_2" \
-                  | awk 'BEGIN{IGNORECASE=1} /^location:/ {$1=""; sub(/^ /,""); sub(/\r$/,""); print; exit}')
-                if [ -z "$DOWNLOAD_URL" ]; then
-                  echo "::error::Link ROM gốc OPlus đã hết hạn hoặc không trả về URL ZIP"
-                  exit 1
-                fi
-              fi
+              DOWNLOAD_URL=$(python dump/resolve_download_url.py "$FILE_PATH_2")
               echo "::add-mask::$DOWNLOAD_URL"
               aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
                   --max-tries=3 --retry-wait=10 \
@@ -415,58 +394,40 @@ jobs:
           fi
           echo "============================================================"
 
-      - name: Repack payload
+      - name: Create final ZIP
         id: repack
         working-directory: ./dump
         env:
-          PRODUCT: ${{ steps.payload_info.outputs.product }}
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
           VERSION: ${{ steps.payload_info.outputs.version }}
           REGION: ${{ steps.payload_info.outputs.region }}
           REPLACED_TYPES: ${{ steps.copy_partitions.outputs.file_types_replaced }}
         run: |
           echo "📋 Thông tin để tạo tên file:"
-          echo "   PRODUCT: $PRODUCT"
+          echo "   DEVICE_CODE: $DEVICE_CODE"
           echo "   VERSION: $VERSION"
           echo "   REGION: $REGION"
           echo "   REPLACED_TYPES: $REPLACED_TYPES"
-          
-          # Loại bỏ product prefix từ VERSION nếu có (ví dụ: CPH2649_ hoặc CPH2649IN_)
-          case "$VERSION" in
-            "$PRODUCT"_*) VERSION="${VERSION#"$PRODUCT"_}" ;;
-          esac
-          # Loại bỏ các prefix khác có thể có (CPH2649, CPH2649IN, etc.)
-          VERSION=$(echo "$VERSION" | sed -E "s/^CPH[0-9]+(IN|EU|GLB|NA|CN|JP|KR|TW|HK|SG|MY|TH|ID|PH|VN)?_?//")
-          PRODUCT=$(printf '%s' "$PRODUCT" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-          VERSION=$(printf '%s' "$VERSION" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-          REGION=$(printf '%s' "$REGION" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-          if [ -z "$PRODUCT" ] || [ -z "$VERSION" ] || [ -z "$REPLACED_TYPES" ]; then
-            echo "::error::Thiếu product, version hoặc loại partition đã thay"
-            exit 1
-          fi
-          
-          OUTPUT_NAME="${PRODUCT}-ota_full-OS_${VERSION}"
-          
-          # Thêm region nếu có
-          if [ -n "$REGION" ]; then
-            OUTPUT_NAME="${OUTPUT_NAME}(${REGION})"
-          fi
-          
-          # Thêm file types đã thay nếu có (thay dấu phẩy thành gạch dưới)
-          if [ -n "$REPLACED_TYPES" ]; then
-            REPLACED_TYPES_FORMATTED=$(echo "$REPLACED_TYPES" | tr ',' '_')
-            OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES_FORMATTED}"
-            echo "   ✅ Đã thêm file types: $REPLACED_TYPES_FORMATTED"
-          else
-            echo "   ⚠️  Không có file types được thay"
-          fi
-          
-          OUTPUT_NAME="${OUTPUT_NAME}.zip"
+
+          OUTPUT_NAME=$(python build_output_name.py \
+            --config file_change_config.json \
+            --device-code "$DEVICE_CODE" \
+            --version "$VERSION" \
+            --file-types "$REPLACED_TYPES" \
+            --region "$REGION")
+          ROOT_FOLDER=$(python build_output_name.py \
+            --config file_change_config.json \
+            --device-code "$DEVICE_CODE" \
+            --version "$VERSION" \
+            --root-folder-only)
           echo "   📦 Tên file cuối cùng: $OUTPUT_NAME"
-          echo "📦 Đang đóng gói lại payload..."
+          echo "   📁 Folder bên trong ZIP: $ROOT_FOLDER/"
+          echo "📦 Đang nén organized thành file ZIP..."
           python repack_payload.py \
             --original-zip ../rom.zip \
             --organized-dir organized \
-            --output "$OUTPUT_NAME"
+            --output "$OUTPUT_NAME" \
+            --root-folder "$ROOT_FOLDER"
           if [ -f "$OUTPUT_NAME" ]; then
             python -m zipfile -t "$OUTPUT_NAME"
             echo "output_file=$OUTPUT_NAME" >> "$GITHUB_OUTPUT"
@@ -601,7 +562,7 @@ jobs:
 
       - name: Create summary
         run: |
-          echo "## 📦 Kết quả giải nén và thay thế payload" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Kết quả tạo ZIP sau khi thay file" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Product Name:** ${{ steps.payload_info.outputs.product }}" >> $GITHUB_STEP_SUMMARY
           echo "**Device Code:** ${{ steps.payload_info.outputs.device_code }}" >> $GITHUB_STEP_SUMMARY
