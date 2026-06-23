@@ -1,4 +1,4 @@
-name: OTA Extract and Replace
+name: OTA Extract and Replace 1
 
 on:
   workflow_dispatch:
@@ -45,9 +45,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          repository: 'proplayer1131/FFF_2026'
-          token: ${{ secrets.ACTION_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -484,7 +481,7 @@ jobs:
           echo "UPLOAD_FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
           echo "✅ Final Upload Folder Name: $FOLDER_NAME"
       
-      - name: Upload Dumps and Generate Link
+      - name: Upload Dumps
         working-directory: ./dump
         env:
           RCLONE_DEST: "1drive1:Mirror/Oxygen"
@@ -557,16 +554,13 @@ jobs:
           if [ "$FILE_COUNT" -gt 0 ]; then
             echo "✅ Upload confirmed. Files: $FILE_COUNT"
             UPLOAD_SIZE=$(rclone size --json "${FULL_REMOTE_PATH}" 2>/dev/null | jq -r '.bytes' | awk '{ sum=$1 ; hum[1024**3]="GB";hum[1024**2]="MB";hum[1024]="KB"; for (x=1024**3; x>=1024; x/=1024){ if (sum>=x) { printf "%.2f %s\n",sum/x,hum[x];break } }}' || echo "N/A")
-            UPLOAD_LINK=$(rclone link "${FULL_REMOTE_PATH}" 2>/dev/null || echo "Không thể tạo link.")
           else
-            echo "⚠️  Warning: Upload verification found 0 files"
-            UPLOAD_SIZE="N/A"
-            UPLOAD_LINK="Không thể tạo link."
+            echo "::error::Upload verification found 0 files"
+            exit 1
           fi
-          echo "::add-mask::${UPLOAD_LINK}"
           echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
           echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
-          echo "BOT_OUTPUT::Link Tải=${UPLOAD_LINK}"
+          echo "✅ Upload hoàn tất: ${FULL_REMOTE_PATH}"
 
       - name: Create summary
         run: |
