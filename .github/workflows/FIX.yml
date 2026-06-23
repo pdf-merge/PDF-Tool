@@ -1,0 +1,581 @@
+name: OTA Extract and Replace
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_path:
+        description: 'ROM quốc tế/base để dump toàn bộ (ví dụ OnePlus 13R)'
+        required: true
+        type: string
+      source_file_2_path:
+        description: 'ROM gốc/donor chỉ lấy partition cần thay (ví dụ ACE 5 PKG110)'
+        required: true
+        type: string
+      file_types:
+        description: 'Loại partition lấy từ ROM gốc (ACE 5: ODM; để trống sẽ tự nhận)'
+        required: false
+        type: string
+      UPLOAD_TARGETS:
+        description: 'Select which directories to upload.'
+        required: true
+        type: choice
+        options:
+          - organized
+          - repacked
+          - both
+        default: 'repacked'
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  extract-and-replace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/FFF_2026'
+          token: ${{ secrets.ACTION_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: ./dump
+        run: |
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends aria2 uuid-dev liblz4-tool jq zip
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          python -m pip install --upgrade pip
+          pip install httpx protobuf==6.32.0 bsdiff4 enlighten zstd brotli requests
+          pip cache purge || true
+
+      - name: Configure rclone
+        env:
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          if [ -z "$RCLONE_CONF_BASE64" ]; then
+            echo "::error::Secret RCLONE_CONF_BASE64 chưa được cấu hình"
+            exit 1
+          fi
+          echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+          if [ ! -s ~/.config/rclone/rclone.conf ]; then
+            echo "::error::Không thể tạo rclone.conf từ RCLONE_CONF_BASE64"
+            exit 1
+          fi
+          echo "✅ Rclone configured từ RCLONE_CONF_BASE64"
+
+      - name: Get international base ROM
+        id: get_rom
+        env:
+          FILE_PATH: ${{ github.event.inputs.file_path }}
+        run: |
+          set -e
+          echo "::add-mask::${FILE_PATH}"
+          if [[ "$FILE_PATH" == http://* ]] || [[ "$FILE_PATH" == https://* ]]; then
+            echo "🌐 Detected Direct URL. Downloading with aria2..."
+            aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
+          else
+            echo "🔍 Detected Filename Prefix. Searching cloud..."
+            FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH}*" | head -n1)"
+            if [ -n "$FILE" ]; then
+              echo "✅ Found in OneDrive: $FILE"
+              SOURCE_PATH="1drive1:Mirror"
+            else
+              FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH}*" | head -n1)"
+              if [ -n "$FILE" ]; then
+                echo "✅ Found in GDrive: $FILE"
+                SOURCE_PATH="gdrive1:VS_Stock"
+              fi
+            fi
+            if [ -z "$FILE" ]; then
+              echo "::error::File not found in OneDrive or GDrive!"
+              exit 1
+            fi
+            DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
+            if [ -n "$DIRECT_URL" ]; then
+              echo "::add-mask::$DIRECT_URL"
+              echo "🚀 Direct link generated! Downloading with aria2..."
+              if aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$DIRECT_URL" 2>&1; then
+                if [ ! -f rom.zip ] || [ ! -s rom.zip ]; then
+                  echo "⚠️  aria2c download failed or file is empty, falling back to rclone copy..."
+                  rm -f rom.zip
+                  rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
+                    --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                    --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                    --progress --stats 10s
+                fi
+              else
+                echo "⚠️  aria2c download failed, falling back to rclone copy..."
+                rm -f rom.zip
+                rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
+                  --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                  --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                  --progress --stats 10s
+              fi
+            else
+              echo "⚠️  No direct link. Falling back to rclone copy..."
+              rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
+                --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                --progress --stats 10s
+            fi
+          fi
+          
+          if [ ! -f rom.zip ]; then
+            echo "::error::rom.zip was not created. Check source and path."
+            exit 1
+          fi
+          python -m zipfile -t rom.zip
+          
+          FILE_SIZE=$(du -h rom.zip | cut -f1)
+          echo "✅ File rom.zip is ready (Size: ${FILE_SIZE})"
+
+      - name: Get original donor ROM
+        id: get_file_2
+        env:
+          FILE_PATH_2: ${{ github.event.inputs.source_file_2_path }}
+        run: |
+          set -e
+          echo "📋 File 2 config:"
+          echo "   Path: [MASKED]"
+          echo "::add-mask::${FILE_PATH_2}"
+          if [[ "$FILE_PATH_2" == http://* ]] || [[ "$FILE_PATH_2" == https://* ]]; then
+            echo "🌐 Detected Direct URL for file 2..."
+            if [[ "$FILE_PATH_2" == *"sharepoint.com"* ]] || [[ "$FILE_PATH_2" == *"sharepoint"* ]]; then
+              echo "🔍 Phát hiện SharePoint URL - sử dụng chế độ đặc biệt"
+              MAX_RETRIES=5
+              RETRY_COUNT=0
+              DOWNLOAD_SUCCESS=false
+              
+              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                echo "🔄 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES (SharePoint mode)..."
+                
+                if curl -L --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                    --retry 2 --retry-delay 10 --max-time 3600 \
+                    -o source_file_2.zip "$FILE_PATH_2" 2>&1; then
+                  if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
+                    DOWNLOAD_SUCCESS=true
+                    break
+                  fi
+                fi
+                
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  WAIT_TIME=$((30 * (2 ** (RETRY_COUNT - 1))))
+                  echo "⚠️  Download failed, đợi ${WAIT_TIME} giây trước khi retry..."
+                  sleep ${WAIT_TIME}
+                  rm -f source_file_2.zip
+                fi
+              done
+              
+              if [ "$DOWNLOAD_SUCCESS" = false ]; then
+                echo "❌ Không thể tải file 2 sau $MAX_RETRIES lần thử"
+              fi
+            else
+              echo "📥 Downloading file 2 from URL with aria2..."
+              aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
+                  --max-tries=3 --retry-wait=10 \
+                  -o source_file_2.zip "$FILE_PATH_2"
+            fi
+          else
+            echo "🔍 Detected Filename Prefix. Searching cloud for file 2..."
+            FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH_2}*" | head -n1)"
+            if [ -n "$FILE" ]; then
+              echo "✅ Found in OneDrive: $FILE"
+              SOURCE_PATH="1drive1:Mirror"
+            else
+              FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH_2}*" | head -n1)"
+              if [ -n "$FILE" ]; then
+                echo "✅ Found in GDrive: $FILE"
+                SOURCE_PATH="gdrive1:VS_Stock"
+              fi
+            fi
+            if [ -z "$FILE" ]; then
+              echo "::error::Không tìm thấy ROM gốc trên OneDrive hoặc GDrive"
+              exit 1
+            fi
+            DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
+            if [ -n "$DIRECT_URL" ]; then
+              echo "::add-mask::$DIRECT_URL"
+              echo "🚀 Direct link generated! Downloading with aria2..."
+              if aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
+                  --max-tries=3 --retry-wait=10 \
+                  -o source_file_2.zip "$DIRECT_URL" 2>&1; then
+                if [ ! -f source_file_2.zip ] || [ ! -s source_file_2.zip ]; then
+                  echo "⚠️  aria2c download failed or file is empty, falling back to rclone copy..."
+                  rm -f source_file_2.zip
+                  rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
+                    --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                    --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                    --progress --stats 10s || true
+                fi
+              else
+                echo "⚠️  aria2c download failed, falling back to rclone copy..."
+                rm -f source_file_2.zip
+                rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
+                  --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                  --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                  --progress --stats 10s || true
+              fi
+            else
+              echo "⚠️  No direct link. Falling back to rclone copy..."
+              rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
+                --transfers=4 --checkers=8 --multi-thread-streams=16 \
+                --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                --progress --stats 10s || true
+            fi
+          fi
+          
+          if [ -f source_file_2.zip ] && [ -s source_file_2.zip ]; then
+            if ! python -m zipfile -t source_file_2.zip; then
+              echo "::error::ROM gốc tải về không phải ZIP hợp lệ"
+              rm -f source_file_2.zip
+              exit 1
+            fi
+            FILE_SIZE=$(du -h source_file_2.zip | cut -f1)
+            echo "✅ File 2 is ready: source_file_2.zip (Size: ${FILE_SIZE})"
+            echo "file_2_ready=true" >> $GITHUB_OUTPUT
+          else
+            echo "::error::ROM gốc không được tải xuống hoặc file rỗng"
+            rm -f source_file_2.zip
+            exit 1
+          fi
+
+      - name: Extract payload info
+        id: payload_info
+        working-directory: ./dump
+        run: |
+          python get_payload_info.py ../rom.zip -o payload_info.json
+          VERSION=$(python -c "import json; print(json.load(open('payload_info.json'))['version_name'])")
+          PRODUCT=$(python -c "import json; print(json.load(open('payload_info.json'))['product_name'])")
+          DEVICE_CODE=$(python -c "import json; d=json.load(open('payload_info.json')); print(d.get('device_code', d['product_name']))")
+          REGION=$(python -c "import json; print(json.load(open('payload_info.json')).get('region', ''))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "product=$PRODUCT" >> "$GITHUB_OUTPUT"
+          echo "device_code=$DEVICE_CODE" >> "$GITHUB_OUTPUT"
+          echo "region=$REGION" >> "$GITHUB_OUTPUT"
+          echo "✅ Version: $VERSION"
+          echo "✅ Product: $PRODUCT"
+          echo "✅ Device Code: $DEVICE_CODE"
+          echo "✅ Region: ${REGION:-N/A}"
+
+      - name: Extract full international base ROM
+        working-directory: ./dump
+        run: |
+          echo "🚀 Bắt đầu giải nén payload file gốc..."
+          rm -rf output organized
+          python extract_payload.py ../rom.zip --out output --organized organized
+          echo "✅ Đã extract payload file gốc xong"
+          if [ -d output ]; then
+            rm -rf output
+            echo "🗑️  Đã xóa thư mục output tạm"
+          fi
+          if [ -f payload_info.json ]; then
+            rm -f payload_info.json
+            echo "🗑️  Đã xóa payload_info.json tạm"
+          fi
+
+      - name: Extract selected partitions from original donor ROM
+        id: extract_file_2
+        working-directory: ./dump
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          FILE_TYPES: ${{ github.event.inputs.file_types }}
+        run: |
+          echo "💾 Kiểm tra dung lượng đĩa trước khi dump file 2..."
+          df -h . | head -2
+          rm -rf output_file_2 organized_file_2
+          echo "📦 Đang xác định partition cần lấy từ ROM gốc..."
+          RESOLVE_ARGS=(
+            --config file_change_config.json
+            --device-code "$DEVICE_CODE"
+          )
+          if [ -n "$FILE_TYPES" ]; then
+            RESOLVE_ARGS+=(--file-types "$FILE_TYPES")
+          fi
+          DONOR_PARTITIONS=$(python resolve_partitions.py "${RESOLVE_ARGS[@]}")
+          if [ -z "$DONOR_PARTITIONS" ]; then
+            echo "::error::Không xác định được partition cần lấy từ ROM gốc"
+            exit 1
+          fi
+          echo "✅ ROM gốc chỉ extract: $DONOR_PARTITIONS"
+          python extract_payload.py ../source_file_2.zip \
+            --out output_file_2 \
+            --organized organized_file_2 \
+            --partitions "$DONOR_PARTITIONS"
+          echo "✅ Đã extract partition cần thiết từ ROM gốc"
+          echo "donor_partitions=$DONOR_PARTITIONS" >> "$GITHUB_OUTPUT"
+          if [ -f ../source_file_2.zip ]; then
+            rm -f ../source_file_2.zip
+            echo "🗑️  Đã xóa source_file_2.zip"
+          fi
+          echo "file_2_extracted=true" >> "$GITHUB_OUTPUT"
+          if [ -d output_file_2 ]; then
+            rm -rf output_file_2
+            echo "🗑️  Đã xóa thư mục output_file_2 tạm"
+          fi
+
+      - name: Replace base partitions with original ROM partitions
+        id: copy_partitions
+        working-directory: ./dump
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          FILE_TYPES: ${{ github.event.inputs.file_types }}
+        run: |
+          python3 copy_partitions_from_file2.py \
+            --config file_change_config.json \
+            --source-dir organized_file_2 \
+            --target-dir organized \
+            --device-code "$DEVICE_CODE" \
+            --file-types "$FILE_TYPES"
+
+      - name: Show organized directory structure
+        working-directory: ./dump
+        run: |
+          echo ""
+          echo "📁 Cấu trúc thư mục organized:"
+          echo "============================================================"
+          if [ -d organized ]; then
+            for dir in SYSTEM BOOTLOADER CRITICAL MODEM EXTRA; do
+              if [ -d "organized/$dir" ]; then
+                echo ""
+                echo "📂 organized/$dir/"
+                echo "----------------------------------------"
+                ls -lh "organized/$dir/" | tail -n +2 | awk '{printf "  %-40s %8s\n", $9, $5}'
+                FILE_COUNT=$(find "organized/$dir" -type f | wc -l)
+                TOTAL_SIZE=$(du -sh "organized/$dir" | cut -f1)
+                echo "  → Tổng: $FILE_COUNT files, Size: $TOTAL_SIZE"
+              fi
+            done
+            echo ""
+            echo "📊 Tổng quan thư mục organized:"
+            echo "----------------------------------------"
+            du -sh organized/*/ 2>/dev/null | awk '{printf "  %-20s %s\n", $2, $1}'
+            TOTAL_FILES=$(find organized -type f | wc -l)
+            TOTAL_SIZE=$(du -sh organized | cut -f1)
+            echo "  → Tổng cộng: $TOTAL_FILES files, Total Size: $TOTAL_SIZE"
+          else
+            echo "⚠️  Thư mục organized không tồn tại"
+          fi
+          echo "============================================================"
+
+      - name: Repack payload
+        id: repack
+        working-directory: ./dump
+        env:
+          PRODUCT: ${{ steps.payload_info.outputs.product }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          REGION: ${{ steps.payload_info.outputs.region }}
+          REPLACED_TYPES: ${{ steps.copy_partitions.outputs.file_types_replaced }}
+        run: |
+          echo "📋 Thông tin để tạo tên file:"
+          echo "   PRODUCT: $PRODUCT"
+          echo "   VERSION: $VERSION"
+          echo "   REGION: $REGION"
+          echo "   REPLACED_TYPES: $REPLACED_TYPES"
+          
+          # Loại bỏ product prefix từ VERSION nếu có (ví dụ: CPH2649_ hoặc CPH2649IN_)
+          case "$VERSION" in
+            "$PRODUCT"_*) VERSION="${VERSION#"$PRODUCT"_}" ;;
+          esac
+          # Loại bỏ các prefix khác có thể có (CPH2649, CPH2649IN, etc.)
+          VERSION=$(echo "$VERSION" | sed -E "s/^CPH[0-9]+(IN|EU|GLB|NA|CN|JP|KR|TW|HK|SG|MY|TH|ID|PH|VN)?_?//")
+          PRODUCT=$(printf '%s' "$PRODUCT" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+          VERSION=$(printf '%s' "$VERSION" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+          REGION=$(printf '%s' "$REGION" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+          if [ -z "$PRODUCT" ] || [ -z "$VERSION" ] || [ -z "$REPLACED_TYPES" ]; then
+            echo "::error::Thiếu product, version hoặc loại partition đã thay"
+            exit 1
+          fi
+          
+          OUTPUT_NAME="${PRODUCT}-ota_full-OS_${VERSION}"
+          
+          # Thêm region nếu có
+          if [ -n "$REGION" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}(${REGION})"
+          fi
+          
+          # Thêm file types đã thay nếu có (thay dấu phẩy thành gạch dưới)
+          if [ -n "$REPLACED_TYPES" ]; then
+            REPLACED_TYPES_FORMATTED=$(echo "$REPLACED_TYPES" | tr ',' '_')
+            OUTPUT_NAME="${OUTPUT_NAME}_${REPLACED_TYPES_FORMATTED}"
+            echo "   ✅ Đã thêm file types: $REPLACED_TYPES_FORMATTED"
+          else
+            echo "   ⚠️  Không có file types được thay"
+          fi
+          
+          OUTPUT_NAME="${OUTPUT_NAME}.zip"
+          echo "   📦 Tên file cuối cùng: $OUTPUT_NAME"
+          echo "📦 Đang đóng gói lại payload..."
+          python repack_payload.py \
+            --original-zip ../rom.zip \
+            --organized-dir organized \
+            --output "$OUTPUT_NAME"
+          if [ -f "$OUTPUT_NAME" ]; then
+            python -m zipfile -t "$OUTPUT_NAME"
+            echo "output_file=$OUTPUT_NAME" >> "$GITHUB_OUTPUT"
+            echo "✅ Đã tạo file: $OUTPUT_NAME"
+            echo ""
+            echo "📁 Danh sách files trong thư mục dump:"
+            echo "============================================================"
+            ls -lh *.zip 2>/dev/null || echo "Không có file .zip nào"
+            echo ""
+            echo "📊 Chi tiết file output:"
+            ls -lh "$OUTPUT_NAME"
+            echo ""
+            echo "📦 Nội dung bên trong file zip:"
+            echo "============================================================"
+            unzip -l "$OUTPUT_NAME" | head -50 || true
+            echo ""
+            echo "📂 Cấu trúc thư mục trong zip:"
+            echo "============================================================"
+            unzip -l "$OUTPUT_NAME" | grep -E "^[ ]*[0-9]+.*/$" | head -20 || echo "Không có thư mục"
+            echo ""
+            echo "📄 Tổng số files và thư mục:"
+            unzip -l "$OUTPUT_NAME" | tail -1
+            echo "============================================================"
+            if [ -f ../rom.zip ]; then
+              rm -f ../rom.zip
+              echo "🗑️  Đã xóa rom.zip"
+            fi
+            if [ -d organized_file_2 ]; then
+              rm -rf organized_file_2
+              echo "🗑️  Đã xóa thư mục organized_file_2"
+            fi
+          else
+            echo "❌ Không thể tạo file output"
+            exit 1
+          fi
+
+      - name: Set Upload Folder Name
+        id: set_folder
+        env:
+          OUTPUT_FILE: ${{ steps.repack.outputs.output_file }}
+        run: |
+          if [ -z "$OUTPUT_FILE" ]; then
+            echo "::error::Tên file output bị trống. Dừng lại."
+            exit 1
+          fi
+
+          FOLDER_NAME="${OUTPUT_FILE%.zip}"
+
+          echo "UPLOAD_FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
+          echo "✅ Final Upload Folder Name: $FOLDER_NAME"
+      
+      - name: Upload Dumps and Generate Link
+        working-directory: ./dump
+        env:
+          RCLONE_DEST: "1drive1:Mirror/Oxygen"
+          UPLOAD_TARGET: ${{ github.event.inputs.UPLOAD_TARGETS }}
+          ZIP_FILE: ${{ steps.repack.outputs.output_file }}
+        run: |
+          FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
+          echo "::add-mask::${RCLONE_DEST}"
+          echo "::add-mask::${FULL_REMOTE_PATH}"
+          echo "📤 Preparing to upload..."
+          echo "   Remote path: ${FULL_REMOTE_PATH}"
+          echo "   Upload target: $UPLOAD_TARGET"
+          
+          if [[ "$UPLOAD_TARGET" == "organized" ]]; then
+            echo "📁 Uploading organized directory..."
+            if [ -d "organized" ]; then
+              rclone copy organized "${FULL_REMOTE_PATH}/organized" \
+                  --transfers=16 \
+                  --checkers=32 \
+                  --log-level NOTICE \
+                  --stats-one-line \
+                  --stats 30s \
+                  --progress
+            else
+              echo "❌ Error: organized directory not found"
+              exit 1
+            fi
+          elif [[ "$UPLOAD_TARGET" == "repacked" ]]; then
+            echo "📦 Uploading repacked zip file..."
+            if [ -f "$ZIP_FILE" ]; then
+              rclone copyto "$ZIP_FILE" "${FULL_REMOTE_PATH}/$(basename "$ZIP_FILE")" \
+                  --transfers=4 \
+                  --checkers=8 \
+                  --log-level NOTICE \
+                  --stats-one-line \
+                  --stats 30s \
+                  --progress
+            else
+              echo "❌ Error: Zip file not found: $ZIP_FILE"
+              exit 1
+            fi
+          elif [[ "$UPLOAD_TARGET" == "both" ]]; then
+            echo "📁📦 Uploading both organized and repacked..."
+            if [ -d "organized" ]; then
+              rclone copy organized "${FULL_REMOTE_PATH}/organized" \
+                  --transfers=16 \
+                  --checkers=32 \
+                  --log-level NOTICE \
+                  --stats-one-line \
+                  --stats 30s \
+                  --progress
+            fi
+            if [ -f "$ZIP_FILE" ]; then
+              rclone copyto "$ZIP_FILE" "${FULL_REMOTE_PATH}/$(basename "$ZIP_FILE")" \
+                  --transfers=4 \
+                  --checkers=8 \
+                  --log-level NOTICE \
+                  --stats-one-line \
+                  --stats 30s \
+                  --progress
+            fi
+          else
+            echo "❌ Error: Unknown upload target: $UPLOAD_TARGET"
+            exit 1
+          fi
+          
+          echo "✅ Upload completed. Verifying..."
+          FILE_COUNT=$(rclone lsf --max-depth 2 "${FULL_REMOTE_PATH}" 2>/dev/null | wc -l || echo "0")
+          
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "✅ Upload confirmed. Files: $FILE_COUNT"
+            UPLOAD_SIZE=$(rclone size --json "${FULL_REMOTE_PATH}" 2>/dev/null | jq -r '.bytes' | awk '{ sum=$1 ; hum[1024**3]="GB";hum[1024**2]="MB";hum[1024]="KB"; for (x=1024**3; x>=1024; x/=1024){ if (sum>=x) { printf "%.2f %s\n",sum/x,hum[x];break } }}' || echo "N/A")
+            UPLOAD_LINK=$(rclone link "${FULL_REMOTE_PATH}" 2>/dev/null || echo "Không thể tạo link.")
+          else
+            echo "⚠️  Warning: Upload verification found 0 files"
+            UPLOAD_SIZE="N/A"
+            UPLOAD_LINK="Không thể tạo link."
+          fi
+          echo "::add-mask::${UPLOAD_LINK}"
+          echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
+          echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
+          echo "BOT_OUTPUT::Link Tải=${UPLOAD_LINK}"
+
+      - name: Create summary
+        run: |
+          echo "## 📦 Kết quả giải nén và thay thế payload" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Product Name:** ${{ steps.payload_info.outputs.product }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Device Code:** ${{ steps.payload_info.outputs.device_code }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.payload_info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**File Types Replaced:** ${{ steps.copy_partitions.outputs.file_types_replaced }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Output File:** ${{ steps.repack.outputs.output_file }}" >> $GITHUB_STEP_SUMMARY
+
+    
