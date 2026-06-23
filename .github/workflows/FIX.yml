@@ -1,4 +1,4 @@
-name: OTA Extract and Replace 1
+name: OTA Extract and Replace
 
 on:
   workflow_dispatch:
@@ -43,14 +43,24 @@ jobs:
           remove-android: "true"
           remove-haskell: "true"
 
-      - name: Checkout repository
+      - name: Checkout FFF tool repository
         uses: actions/checkout@v4
+        with:
+          repository: proplayer1131/FFF_2026
+          ref: main
+          token: ${{ secrets.ACTION_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
+
+      - name: Verify tool files
+        run: |
+          test -f dump/pyproject.toml
+          test -f dump/extract_payload.py
+          test -f dump/copy_partitions_from_file2.py
+          echo "✅ FFF tool files are ready"
 
       - name: Install dependencies
         working-directory: ./dump
@@ -91,7 +101,21 @@ jobs:
           echo "::add-mask::${FILE_PATH}"
           if [[ "$FILE_PATH" == http://* ]] || [[ "$FILE_PATH" == https://* ]]; then
             echo "🌐 Detected Direct URL. Downloading with aria2..."
-            aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
+            DOWNLOAD_URL="$FILE_PATH"
+            if [[ "$FILE_PATH" == *"/downloadCheck?"* ]]; then
+              DOWNLOAD_URL=$(curl -fsSI \
+                -H "userid: oplus-ota|" \
+                -H "User-Agent: Mozilla/5.0" \
+                "$FILE_PATH" \
+                | awk 'BEGIN{IGNORECASE=1} /^location:/ {$1=""; sub(/^ /,""); sub(/\r$/,""); print; exit}')
+              if [ -z "$DOWNLOAD_URL" ]; then
+                echo "::error::Link OPlus đã hết hạn hoặc không trả về URL ZIP"
+                exit 1
+              fi
+            fi
+            echo "::add-mask::$DOWNLOAD_URL"
+            aria2c -x16 -s16 -j5 --file-allocation=none \
+              --summary-interval=10 -o rom.zip "$DOWNLOAD_URL"
           else
             echo "🔍 Detected Filename Prefix. Searching cloud..."
             FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH}*" | head -n1)"
@@ -191,9 +215,22 @@ jobs:
               fi
             else
               echo "📥 Downloading file 2 from URL with aria2..."
+              DOWNLOAD_URL="$FILE_PATH_2"
+              if [[ "$FILE_PATH_2" == *"/downloadCheck?"* ]]; then
+                DOWNLOAD_URL=$(curl -fsSI \
+                  -H "userid: oplus-ota|" \
+                  -H "User-Agent: Mozilla/5.0" \
+                  "$FILE_PATH_2" \
+                  | awk 'BEGIN{IGNORECASE=1} /^location:/ {$1=""; sub(/^ /,""); sub(/\r$/,""); print; exit}')
+                if [ -z "$DOWNLOAD_URL" ]; then
+                  echo "::error::Link ROM gốc OPlus đã hết hạn hoặc không trả về URL ZIP"
+                  exit 1
+                fi
+              fi
+              echo "::add-mask::$DOWNLOAD_URL"
               aria2c -x8 -s8 -j3 --file-allocation=none --summary-interval=10 \
                   --max-tries=3 --retry-wait=10 \
-                  -o source_file_2.zip "$FILE_PATH_2"
+                  -o source_file_2.zip "$DOWNLOAD_URL"
             fi
           else
             echo "🔍 Detected Filename Prefix. Searching cloud for file 2..."
@@ -252,7 +289,7 @@ jobs:
             fi
             FILE_SIZE=$(du -h source_file_2.zip | cut -f1)
             echo "✅ File 2 is ready: source_file_2.zip (Size: ${FILE_SIZE})"
-            echo "file_2_ready=true" >> $GITHUB_OUTPUT
+            echo "file_2_ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "::error::ROM gốc không được tải xuống hoặc file rỗng"
             rm -f source_file_2.zip
