@@ -1,20 +1,24 @@
-name: OTA MAKE
-
+name: OTA BUILD
 on:
   workflow_dispatch:
     inputs:
       file_path:
-        description: 'ROM quốc tế/base để dump toàn bộ (ví dụ OnePlus 13R)'
+        description: 'ROM quốc tế để dump toàn bộ (ví dụ OnePlus 13R)'
         required: true
         type: string
       source_file_2_path:
-        description: 'ROM gốc/donor chỉ lấy partition cần thay (ví dụ ACE 5 PKG110)'
-        required: true
-        type: string
-      file_types:
-        description: 'ODM hoặc REGION,OPLUSTANVBK (= SIGNAL); để trống sẽ tự nhận'
+        description: 'ROM gốc chỉ lấy partition cần thay; bỏ trống nếu không thay file'
         required: false
         type: string
+      file_types:
+        description: 'ODM hoặc REGION,OPLUSTANVBK '
+        required: false
+        type: string
+      fix_ai:
+        description: 'Apply AI'
+        required: false
+        type: boolean
+        default: false
       UPLOAD_TARGETS:
         description: 'Select which directories to upload.'
         required: true
@@ -61,6 +65,8 @@ jobs:
           test -f dump/copy_partitions_from_file2.py
           test -f dump/resolve_download_url.py
           test -f dump/build_output_name.py
+          test -f dump/resolve_ai_fix_file.py
+          test -f dump/apply_ai_fix.py
           echo "✅ FFF tool files are ready"
 
       - name: Install dependencies
@@ -163,6 +169,7 @@ jobs:
           echo "✅ File rom.zip is ready (Size: ${FILE_SIZE})"
 
       - name: Get original donor ROM
+        if: ${{ github.event.inputs.source_file_2_path != '' }}
         id: get_file_2
         env:
           FILE_PATH_2: ${{ github.event.inputs.source_file_2_path }}
@@ -293,6 +300,38 @@ jobs:
           echo "✅ Device Code: $DEVICE_CODE"
           echo "✅ Region: ${REGION:-N/A}"
 
+      - name: Resolve replacement plan
+        id: replacement_plan
+        working-directory: ./dump
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          FILE_TYPES: ${{ github.event.inputs.file_types }}
+          SOURCE_FILE_2_PATH: ${{ github.event.inputs.source_file_2_path }}
+        run: |
+          RESOLVE_ARGS=(
+            --config file_change_config.json
+            --device-code "$DEVICE_CODE"
+            --allow-empty
+          )
+          if [ -n "$FILE_TYPES" ]; then
+            RESOLVE_ARGS+=(--file-types "$FILE_TYPES")
+          fi
+
+          DONOR_PARTITIONS=$(python resolve_partitions.py "${RESOLVE_ARGS[@]}")
+          echo "donor_partitions=$DONOR_PARTITIONS" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$DONOR_PARTITIONS" ]; then
+            if [ -z "$SOURCE_FILE_2_PATH" ]; then
+              echo "::error::May nay can thay partition ($DONOR_PARTITIONS) nhung source_file_2_path dang trong"
+              exit 1
+            fi
+            echo "has_replacements=true" >> "$GITHUB_OUTPUT"
+            echo "Replacement partitions: $DONOR_PARTITIONS"
+          else
+            echo "has_replacements=false" >> "$GITHUB_OUTPUT"
+            echo "No replacement partitions configured; donor ROM will be skipped"
+          fi
+
       - name: Extract full international base ROM
         working-directory: ./dump
         run: |
@@ -310,6 +349,7 @@ jobs:
           fi
 
       - name: Extract selected partitions from original donor ROM
+        if: ${{ steps.replacement_plan.outputs.has_replacements == 'true' }}
         id: extract_file_2
         working-directory: ./dump
         env:
@@ -362,7 +402,60 @@ jobs:
             --source-dir organized_file_2 \
             --target-dir organized \
             --device-code "$DEVICE_CODE" \
-            --file-types "$FILE_TYPES"
+            --file-types "$FILE_TYPES" \
+            --allow-empty
+
+      - name: Resolve AI fix setting
+        id: ai_fix_setting
+        working-directory: ./dump
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          FIX_AI_INPUT: ${{ github.event.inputs.fix_ai }}
+        run: |
+          DEFAULT_AI_FIX=$(python build_output_name.py \
+            --config file_change_config.json \
+            --device-code "$DEVICE_CODE" \
+            --version "$VERSION" \
+            --default-ai-fix-only)
+
+          APPLY_AI_FIX=false
+          if [ "$FIX_AI_INPUT" = "true" ] || [ "$DEFAULT_AI_FIX" = "true" ]; then
+            APPLY_AI_FIX=true
+          fi
+
+          echo "apply_ai_fix=$APPLY_AI_FIX" >> "$GITHUB_OUTPUT"
+          echo "Default AI fix: $DEFAULT_AI_FIX"
+          echo "Input AI fix: ${FIX_AI_INPUT:-false}"
+          echo "Apply AI fix: $APPLY_AI_FIX"
+
+      - name: Apply AI my_region fix
+        if: ${{ steps.ai_fix_setting.outputs.apply_ai_fix == 'true' }}
+        id: fix_ai
+        working-directory: ./dump
+        env:
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          AI_FIX_REMOTE_DIR: "1drive1:Mirror/Oxygen/FileFix/AI"
+        run: |
+          set -e
+          rm -rf ai_fix
+          mkdir -p ai_fix
+          echo "Resolving AI fix for version: $VERSION"
+          rclone lsf --recursive --files-only "$AI_FIX_REMOTE_DIR" > ai_fix_candidates.txt
+          AI_FIX_FILE=$(python resolve_ai_fix_file.py \
+            --version "$VERSION" < ai_fix_candidates.txt)
+          echo "AI fix file: $AI_FIX_FILE"
+          rclone copyto "${AI_FIX_REMOTE_DIR}/${AI_FIX_FILE}" ai_fix/my_region.img \
+            --transfers=4 \
+            --checkers=8 \
+            --log-level NOTICE \
+            --stats-one-line \
+            --stats 10s \
+            --progress
+          python apply_ai_fix.py \
+            --source-file ai_fix/my_region.img \
+            --target-dir organized \
+            --partition my_region
 
       - name: Show organized directory structure
         working-directory: ./dump
@@ -402,18 +495,30 @@ jobs:
           VERSION: ${{ steps.payload_info.outputs.version }}
           REGION: ${{ steps.payload_info.outputs.region }}
           REPLACED_TYPES: ${{ steps.copy_partitions.outputs.file_types_replaced }}
+          AI_FIX_REPLACED: ${{ steps.fix_ai.outputs.ai_fix_replaced }}
         run: |
           echo "📋 Thông tin để tạo tên file:"
           echo "   DEVICE_CODE: $DEVICE_CODE"
           echo "   VERSION: $VERSION"
           echo "   REGION: $REGION"
           echo "   REPLACED_TYPES: $REPLACED_TYPES"
+          echo "   AI_FIX_REPLACED: $AI_FIX_REPLACED"
+
+          FINAL_REPLACED_TYPES="$REPLACED_TYPES"
+          if [ -n "$AI_FIX_REPLACED" ]; then
+            if [ -n "$FINAL_REPLACED_TYPES" ]; then
+              FINAL_REPLACED_TYPES="${FINAL_REPLACED_TYPES},${AI_FIX_REPLACED}"
+            else
+              FINAL_REPLACED_TYPES="$AI_FIX_REPLACED"
+            fi
+          fi
+          echo "   FINAL_REPLACED_TYPES: ${FINAL_REPLACED_TYPES:-N/A}"
 
           OUTPUT_NAME=$(python build_output_name.py \
             --config file_change_config.json \
             --device-code "$DEVICE_CODE" \
             --version "$VERSION" \
-            --file-types "$REPLACED_TYPES" \
+            --file-types "$FINAL_REPLACED_TYPES" \
             --region "$REGION")
           ROOT_FOLDER=$(python build_output_name.py \
             --config file_change_config.json \
@@ -455,6 +560,14 @@ jobs:
               rm -f ../rom.zip
               echo "🗑️  Đã xóa rom.zip"
             fi
+            if [ -f ../source_file_2.zip ]; then
+              rm -f ../source_file_2.zip
+              echo "🗑️  Đã xóa source_file_2.zip"
+            fi
+            if [ -d ai_fix ]; then
+              rm -rf ai_fix ai_fix_candidates.txt
+              echo "🗑️  Đã xóa file AI fix tạm"
+            fi
             if [ -d organized_file_2 ]; then
               rm -rf organized_file_2
               echo "🗑️  Đã xóa thư mục organized_file_2"
@@ -464,9 +577,13 @@ jobs:
             exit 1
           fi
 
-      - name: Set Upload Folder Name
+      - name: Set Upload Destination
         id: set_folder
+        working-directory: ./dump
         env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+          REGION: ${{ steps.payload_info.outputs.region }}
           OUTPUT_FILE: ${{ steps.repack.outputs.output_file }}
         run: |
           if [ -z "$OUTPUT_FILE" ]; then
@@ -474,10 +591,27 @@ jobs:
             exit 1
           fi
 
-          FOLDER_NAME="${OUTPUT_FILE%.zip}"
+          DEVICE_FOLDER=$(python build_output_name.py \
+            --config file_change_config.json \
+            --device-code "$DEVICE_CODE" \
+            --version "$VERSION" \
+            --device-folder-only)
+          UPLOAD_REGION=$(python build_output_name.py \
+            --config file_change_config.json \
+            --device-code "$DEVICE_CODE" \
+            --version "$VERSION" \
+            --upload-region-only \
+            --region "$REGION")
 
-          echo "UPLOAD_FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_ENV
-          echo "✅ Final Upload Folder Name: $FOLDER_NAME"
+          if [ -z "$DEVICE_FOLDER" ]; then
+            echo "::error::Khong xac dinh duoc folder ten may"
+            exit 1
+          fi
+
+          echo "UPLOAD_DEVICE_FOLDER=$DEVICE_FOLDER" >> "$GITHUB_ENV"
+          echo "UPLOAD_REGION=$UPLOAD_REGION" >> "$GITHUB_ENV"
+          echo "Upload device folder: $DEVICE_FOLDER"
+          echo "Upload region: ${UPLOAD_REGION:-N/A}"
       
       - name: Upload Dumps
         working-directory: ./dump
@@ -486,12 +620,61 @@ jobs:
           UPLOAD_TARGET: ${{ github.event.inputs.UPLOAD_TARGETS }}
           ZIP_FILE: ${{ steps.repack.outputs.output_file }}
         run: |
-          FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
+          DEVICE_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_DEVICE_FOLDER}"
+          FULL_REMOTE_PATH="$DEVICE_REMOTE_PATH"
+          UPLOAD_REMOTE_LABEL="$UPLOAD_DEVICE_FOLDER"
+
+          if [ -n "${UPLOAD_REGION:-}" ]; then
+            REGION_DIRS="$(rclone lsf --dirs-only "$DEVICE_REMOTE_PATH" 2>/dev/null || true)"
+            HAS_REGION_DIR=false
+            MATCHED_REGION_DIR=""
+
+            while IFS= read -r REGION_DIR; do
+              REGION_DIR="${REGION_DIR%/}"
+              if [ -z "$REGION_DIR" ]; then
+                continue
+              fi
+
+              REGION_DIR_UPPER="${REGION_DIR^^}"
+              case "$REGION_DIR_UPPER" in
+                EU|GLB|IN|INDIA)
+                  HAS_REGION_DIR=true
+                  ;;
+              esac
+
+              case "$UPLOAD_REGION" in
+                IN)
+                  if [ "$REGION_DIR_UPPER" = "IN" ]; then
+                    MATCHED_REGION_DIR="$REGION_DIR"
+                  elif [ -z "$MATCHED_REGION_DIR" ] && [ "$REGION_DIR_UPPER" = "INDIA" ]; then
+                    MATCHED_REGION_DIR="$REGION_DIR"
+                  fi
+                  ;;
+                EU|GLB)
+                  if [ "$REGION_DIR_UPPER" = "$UPLOAD_REGION" ]; then
+                    MATCHED_REGION_DIR="$REGION_DIR"
+                  fi
+                  ;;
+              esac
+            done <<< "$REGION_DIRS"
+
+            if [ -n "$MATCHED_REGION_DIR" ]; then
+              FULL_REMOTE_PATH="${DEVICE_REMOTE_PATH}/${MATCHED_REGION_DIR}"
+              UPLOAD_REMOTE_LABEL="${UPLOAD_DEVICE_FOLDER}/${MATCHED_REGION_DIR}"
+            elif [ "$HAS_REGION_DIR" = true ]; then
+              FULL_REMOTE_PATH="${DEVICE_REMOTE_PATH}/${UPLOAD_REGION}"
+              UPLOAD_REMOTE_LABEL="${UPLOAD_DEVICE_FOLDER}/${UPLOAD_REGION}"
+            fi
+          fi
           echo "::add-mask::${RCLONE_DEST}"
+          echo "::add-mask::${DEVICE_REMOTE_PATH}"
           echo "::add-mask::${FULL_REMOTE_PATH}"
           echo "📤 Preparing to upload..."
+          echo "   Device folder: ${UPLOAD_DEVICE_FOLDER}"
+          echo "   Region folder: ${UPLOAD_REGION:-N/A}"
           echo "   Remote path: ${FULL_REMOTE_PATH}"
           echo "   Upload target: $UPLOAD_TARGET"
+          rclone mkdir "$FULL_REMOTE_PATH"
           
           if [[ "$UPLOAD_TARGET" == "organized" ]]; then
             echo "📁 Uploading organized directory..."
@@ -556,7 +739,7 @@ jobs:
             echo "::error::Upload verification found 0 files"
             exit 1
           fi
-          echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_FOLDER_NAME}"
+          echo "BOT_OUTPUT::Tên thư mục=${UPLOAD_REMOTE_LABEL}"
           echo "BOT_OUTPUT::Kích thước=${UPLOAD_SIZE:-N/A}"
           echo "✅ Upload hoàn tất: ${FULL_REMOTE_PATH}"
 
@@ -568,6 +751,7 @@ jobs:
           echo "**Device Code:** ${{ steps.payload_info.outputs.device_code }}" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.payload_info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**File Types Replaced:** ${{ steps.copy_partitions.outputs.file_types_replaced }}" >> $GITHUB_STEP_SUMMARY
+          echo "**AI Fix:** ${{ steps.fix_ai.outputs.ai_fix_replaced }}" >> $GITHUB_STEP_SUMMARY
           echo "**Output File:** ${{ steps.repack.outputs.output_file }}" >> $GITHUB_STEP_SUMMARY
 
     
