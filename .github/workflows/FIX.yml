@@ -442,8 +442,17 @@ jobs:
           mkdir -p ai_fix
           echo "Resolving AI fix for version: $VERSION"
           rclone lsf --recursive --files-only "$AI_FIX_REMOTE_DIR" > ai_fix_candidates.txt
-          AI_FIX_FILE=$(python resolve_ai_fix_file.py \
-            --version "$VERSION" < ai_fix_candidates.txt)
+          if ! AI_FIX_FILE=$(python resolve_ai_fix_file.py \
+            --version "$VERSION" < ai_fix_candidates.txt); then
+            echo "No matching AI fix found for $VERSION; skipping AI fix"
+            echo "ai_fix_replaced=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$AI_FIX_FILE" ]; then
+            echo "AI fix resolver returned empty result; skipping AI fix"
+            echo "ai_fix_replaced=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "AI fix file: $AI_FIX_FILE"
           rclone copyto "${AI_FIX_REMOTE_DIR}/${AI_FIX_FILE}" ai_fix/my_region.img \
             --transfers=4 \
