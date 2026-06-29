@@ -68,6 +68,8 @@ jobs:
         run: bash dump/scripts/ota_build_ci.sh verify-tools
 
       - name: Install dependencies
+        env:
+          BUILD_SUPER: ${{ github.event.inputs.BUILD_SUPER }}
         run: bash dump/scripts/ota_build_ci.sh install-dependencies
 
       - name: Configure rclone
