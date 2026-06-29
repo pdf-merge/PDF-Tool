@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      BUILD_SUPER:
+        description: 'Build super.img from organized dynamic partitions'
+        required: false
+        type: boolean
+        default: false
       UPLOAD_TARGETS:
         description: 'Select which directories to upload.'
         required: true
@@ -133,6 +138,14 @@ jobs:
       - name: Show organized directory structure
         run: bash dump/scripts/ota_build_ci.sh show-organized
 
+      - name: Build super image
+        if: ${{ github.event.inputs.BUILD_SUPER == 'true' }}
+        id: build_super
+        env:
+          DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
+          VERSION: ${{ steps.payload_info.outputs.version }}
+        run: bash dump/scripts/ota_build_ci.sh build-super
+
       - name: Create final archive
         id: repack
         env:
@@ -141,6 +154,7 @@ jobs:
           REGION: ${{ steps.payload_info.outputs.region }}
           REPLACED_TYPES: ${{ steps.copy_partitions.outputs.file_types_replaced }}
           AI_FIX_REPLACED: ${{ steps.fix_ai.outputs.ai_fix_replaced }}
+          SUPER_FILE: ${{ steps.build_super.outputs.super_file }}
         run: bash dump/scripts/ota_build_ci.sh repack
 
       - name: Set Upload Destination
@@ -289,4 +303,5 @@ jobs:
           FILE_TYPES_REPLACED: ${{ steps.copy_partitions.outputs.file_types_replaced }}
           AI_FIX_REPLACED: ${{ steps.fix_ai.outputs.ai_fix_replaced }}
           OUTPUT_FILE: ${{ steps.repack.outputs.output_file }}
+          SUPER_FILE: ${{ steps.build_super.outputs.super_file }}
         run: bash dump/scripts/ota_build_ci.sh create-summary
