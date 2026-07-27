@@ -1,19 +1,21 @@
-name: Run LSConedrive
+name: Move OneDrive to Google Drive
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run without moving/deleting files"
+        description: "Override DRY_RUN for this run"
         required: true
         default: "true"
         type: choice
         options:
           - "true"
           - "false"
+  schedule:
+    - cron: "*/30 * * * *"
 
 concurrency:
-  group: lsconedrive-mover
+  group: onedrive-to-gdrive
   cancel-in-progress: false
 
 jobs:
@@ -36,7 +38,6 @@ jobs:
         with:
           repository: "proplayer1131/LSConedrive"
           token: ${{ secrets.ACTION_TOKEN }}
-          path: LSConedrive
 
       - name: Install rclone
         run: |
@@ -46,7 +47,7 @@ jobs:
       - name: Restore rclone config
         env:
           RCLONE_CONFIG_TEXT: ${{ secrets.RCLONE_CONFIG }}
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE642 }}
         run: |
           set -Eeuo pipefail
           install -m 700 -d "$HOME/.config/rclone"
@@ -56,15 +57,14 @@ jobs:
           elif [[ -n "${RCLONE_CONFIG_TEXT}" ]]; then
             printf '%s\n' "$RCLONE_CONFIG_TEXT" > "$HOME/.config/rclone/rclone.conf"
           else
-            echo "Missing GitHub secret: set RCLONE_CONFIG_BASE64 or RCLONE_CONFIG." >&2
+            echo "Missing GitHub secret: set RCLONE_CONFIG_BASE642 or RCLONE_CONFIG." >&2
             exit 1
           fi
 
           chmod 600 "$HOME/.config/rclone/rclone.conf"
           rclone listremotes
 
-      - name: Restore LSConedrive environment
-        working-directory: LSConedrive
+      - name: Restore job environment
         env:
           DOT_ENV_TEXT: ${{ secrets.DOT_ENV }}
           DOT_ENV_BASE64: ${{ secrets.DOT_ENV_BASE64 }}
@@ -81,10 +81,12 @@ jobs:
           fi
 
           chmod 600 .env
-          printf '\nDRY_RUN=%s\n' "${{ inputs.dry_run }}" >> .env
 
-      - name: Run LSConedrive mover
-        working-directory: LSConedrive
+      - name: Apply manual dry-run override
+        if: github.event_name == 'workflow_dispatch'
+        run: printf '\nDRY_RUN=%s\n' "${{ inputs.dry_run }}" >> .env
+
+      - name: Run mover
         env:
           WORK_DIR: ${{ runner.temp }}/onedrive_to_gdrive
         run: ./onedrive_to_gdrive.sh
