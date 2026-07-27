@@ -72,14 +72,14 @@ jobs:
         run: |
           curl https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          if [ -z "${{ secrets.RCLONE_CONF2 }}" ]; then
-            echo "⚠️  Warning: RCLONE_CONF2 secret chưa được cấu hình"
+          if [ -z "${{ secrets.RCLONE_CONFIG_BASE64 }}" ]; then
+            echo "⚠️  Warning: RCLONE_CONFIG_BASE64 secret chưa được cấu hình"
             touch ~/.config/rclone/rclone.conf
           else
-            if echo "${{ secrets.RCLONE_CONF2 }}" | base64 -d > ~/.config/rclone/rclone.conf 2>/dev/null; then
+            if echo "${{ secrets.RCLONE_CONFIG_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf 2>/dev/null; then
               echo "✅ Rclone configured từ secret"
             else
-              echo "❌ Lỗi: Không thể decode RCLONE_CONF2 secret"
+              echo "❌ Lỗi: Không thể decode RCLONE_CONFIG_BASE64 secret"
               touch ~/.config/rclone/rclone.conf
             fi
           fi
@@ -100,19 +100,19 @@ jobs:
             aria2c -x16 -s16 -j5 --file-allocation=none --summary-interval=10 -o rom.zip "$FILE_PATH"
           else
             echo "🔍 Detected Filename Prefix. Searching cloud..."
-            FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH}*" | head -n1)"
+            FILE="$(rclone lsf 'gdrive:Mirror' --files-only --include "${FILE_PATH}*" | head -n1)"
             if [ -n "$FILE" ]; then
-              echo "✅ Found in OneDrive: $FILE"
-              SOURCE_PATH="1drive1:Mirror"
+              echo "✅ Found in Google Drive: $FILE"
+              SOURCE_PATH="gdrive:Mirror"
             else
-              FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH}*" | head -n1)"
+              FILE="$(rclone lsf 'gdrive:VS_Stock' --files-only --include "${FILE_PATH}*" | head -n1)"
               if [ -n "$FILE" ]; then
                 echo "✅ Found in GDrive: $FILE"
-                SOURCE_PATH="gdrive1:VS_Stock"
+                SOURCE_PATH="gdrive:VS_Stock"
               fi
             fi
             if [ -z "$FILE" ]; then
-              echo "::error::File not found in OneDrive or GDrive!"
+              echo "::error::File not found in Google Drive or GDrive!"
               exit 1
             fi
             DIRECT_URL=$(rclone link "$SOURCE_PATH/$FILE" 2>/dev/null || true)
@@ -125,7 +125,7 @@ jobs:
                   rm -f rom.zip
                   rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
                     --transfers=4 --checkers=8 --multi-thread-streams=16 \
-                    --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                    --buffer-size=64M --drive-chunk-size=256M \
                     --progress --stats 10s
                 fi
               else
@@ -133,14 +133,14 @@ jobs:
                 rm -f rom.zip
                 rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
                   --transfers=4 --checkers=8 --multi-thread-streams=16 \
-                  --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                  --buffer-size=64M --drive-chunk-size=256M \
                   --progress --stats 10s
               fi
             else
               echo "⚠️  No direct link. Falling back to rclone copy..."
               rclone copyto "$SOURCE_PATH/$FILE" ./rom.zip \
                 --transfers=4 --checkers=8 --multi-thread-streams=16 \
-                --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                --buffer-size=64M --drive-chunk-size=256M \
                 --progress --stats 10s
             fi
           fi
@@ -205,19 +205,19 @@ jobs:
             fi
           else
             echo "🔍 Detected Filename Prefix. Searching cloud for file 2..."
-            FILE="$(rclone lsf '1drive1:Mirror' --files-only --include "${FILE_PATH_2}*" | head -n1)"
+            FILE="$(rclone lsf 'gdrive:Mirror' --files-only --include "${FILE_PATH_2}*" | head -n1)"
             if [ -n "$FILE" ]; then
-              echo "✅ Found in OneDrive: $FILE"
-              SOURCE_PATH="1drive1:Mirror"
+              echo "✅ Found in Google Drive: $FILE"
+              SOURCE_PATH="gdrive:Mirror"
             else
-              FILE="$(rclone lsf 'gdrive1:VS_Stock' --files-only --include "${FILE_PATH_2}*" | head -n1)"
+              FILE="$(rclone lsf 'gdrive:VS_Stock' --files-only --include "${FILE_PATH_2}*" | head -n1)"
               if [ -n "$FILE" ]; then
                 echo "✅ Found in GDrive: $FILE"
-                SOURCE_PATH="gdrive1:VS_Stock"
+                SOURCE_PATH="gdrive:VS_Stock"
               fi
             fi
             if [ -z "$FILE" ]; then
-              echo "⚠️  File 2 not found in OneDrive or GDrive, skipping..."
+              echo "⚠️  File 2 not found in Google Drive or GDrive, skipping..."
               echo "file_2_ready=false" >> $GITHUB_OUTPUT
               exit 0
             fi
@@ -233,7 +233,7 @@ jobs:
                   rm -f source_file_2.zip
                   rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
                     --transfers=4 --checkers=8 --multi-thread-streams=16 \
-                    --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                    --buffer-size=64M --drive-chunk-size=256M \
                     --progress --stats 10s || true
                 fi
               else
@@ -241,14 +241,14 @@ jobs:
                 rm -f source_file_2.zip
                 rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
                   --transfers=4 --checkers=8 --multi-thread-streams=16 \
-                  --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                  --buffer-size=64M --drive-chunk-size=256M \
                   --progress --stats 10s || true
               fi
             else
               echo "⚠️  No direct link. Falling back to rclone copy..."
               rclone copyto "$SOURCE_PATH/$FILE" ./source_file_2.zip \
                 --transfers=4 --checkers=8 --multi-thread-streams=16 \
-                --buffer-size=64M --onedrive-chunk-size=256M --drive-chunk-size=256M \
+                --buffer-size=64M --drive-chunk-size=256M \
                 --progress --stats 10s || true
             fi
           fi
@@ -259,7 +259,7 @@ jobs:
             echo "file_2_ready=true" >> $GITHUB_OUTPUT
           else
             echo "❌ File 2 was not created or is empty"
-            echo "   ⚠️  Workflow sẽ tiếp tục và sử dụng OneDrive fallback nếu cần"
+            echo "   ⚠️  Workflow sẽ tiếp tục và sử dụng Google Drive fallback nếu cần"
             echo "file_2_ready=false" >> $GITHUB_OUTPUT
             rm -f source_file_2.zip
           fi
@@ -347,7 +347,7 @@ jobs:
             fi
           fi
 
-      - name: Replace files from OneDrive (fallback)
+      - name: Replace files from Google Drive (fallback)
         id: replace_files
         if: steps.copy_partitions.outputs.file_types_replaced == '' || steps.extract_file_2.outputs.file_2_extracted != 'true'
         working-directory: ./dump
@@ -357,7 +357,7 @@ jobs:
           FILE_TYPES: ${{ github.event.inputs.file_types }}
         run: |
           if [ "${{ steps.extract_file_2.outputs.file_2_extracted }}" != "true" ]; then
-            echo "🔄 Tải file từ OneDrive (không có file 2)..."
+            echo "🔄 Tải file từ Google Drive (không có file 2)..."
             if [ -z "$FILE_TYPES" ]; then
               echo "🔄 Tự động detect file types từ config..."
               python replace_multiple_files.py \
@@ -380,7 +380,7 @@ jobs:
               fi
             fi
           else
-            echo "⏭️  Đã copy từ file 2, bỏ qua OneDrive"
+            echo "⏭️  Đã copy từ file 2, bỏ qua Google Drive"
             if [ ! -z "${{ steps.copy_partitions.outputs.file_types_replaced }}" ]; then
               echo "file_types_replaced=${{ steps.copy_partitions.outputs.file_types_replaced }}" >> $GITHUB_OUTPUT
             fi
@@ -515,7 +515,7 @@ jobs:
       - name: Upload Dumps and Generate Link
         working-directory: ./dump
         env:
-          RCLONE_DEST: "1drive1:Mirror/Oxygen"
+          RCLONE_DEST: "gdrive:Mirror/Oxygen"
         run: |
           FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
           echo "::add-mask::${RCLONE_DEST}"

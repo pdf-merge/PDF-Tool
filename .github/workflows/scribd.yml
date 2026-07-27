@@ -43,22 +43,23 @@ jobs:
 
     - name: Install and configure rclone
       env:
-        RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
       run: |
         sudo apt-get update && sudo apt-get install -y rclone libjpeg-dev zlib1g-dev libfreetype6-dev
         mkdir -p ~/.config/rclone
-        echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+        printf '%s' "$RCLONE_CONFIG_BASE64" | base64 --decode > ~/.config/rclone/rclone.conf
+        rclone listremotes | grep -qx 'gdrive:'
 
     - name: Sanitize, Upload, and Get Folder Link
-      id: onedrive
+      id: gdrive
       run: |
         ORIGINAL_FILENAME=$(ls output/* | head -n 1)
         SANITIZED_BASENAME=$(basename "$ORIGINAL_FILENAME" | sed 's#[*:<>?\/\\|]#_#g')
         if [ "$(basename "$ORIGINAL_FILENAME")" != "$SANITIZED_BASENAME" ]; then
           mv "$ORIGINAL_FILENAME" "output/$SANITIZED_BASENAME"
         fi
-        rclone copy "output/$SANITIZED_BASENAME" "1drive1:Scribd_download" --progress
-        PUBLIC_LINK=$(rclone link "1drive1:Scribd_download/$SANITIZED_BASENAME")
+        rclone copy "output/$SANITIZED_BASENAME" "gdrive:Scribd_download" --progress
+        PUBLIC_LINK=$(rclone link "gdrive:Scribd_download/$SANITIZED_BASENAME")
         echo "::add-mask::$PUBLIC_LINK"
         echo "public_link=$PUBLIC_LINK" >> $GITHUB_OUTPUT
 
@@ -66,7 +67,7 @@ jobs:
       if: success()
       run: |
         echo "✅ Tải Sách Hoàn Tất" > telegram_message.txt
-        echo "🔗 Link: [Nhấn vào đây](${{ steps.onedrive.outputs.public_link }})" >> telegram_message.txt
+        echo "🔗 Link: [Nhấn vào đây](${{ steps.gdrive.outputs.public_link }})" >> telegram_message.txt
 
     - name: Upload Result Message
       if: success() && hashFiles('telegram_message.txt') != ''

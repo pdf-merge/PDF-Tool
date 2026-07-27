@@ -12,7 +12,7 @@ jobs:
   merge-pdfs:
     runs-on: ubuntu-latest
     env:
-      RCLONE_DEST_PATH: "1drive:LSC_Merged"
+      RCLONE_DEST_PATH: "gdrive:LSC_Merged"
     steps:
       - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
@@ -37,7 +37,7 @@ jobs:
       - name: 2. Configure Rclone
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "${{ secrets.RCLONE_CONFIG_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: 3. Find and Download
         env:
@@ -45,15 +45,15 @@ jobs:
         run: |
           mkdir -p downloads
           echo "Searching for directory with prefix: $FOLDER_PREFIX"
-          TARGET_DIR_NAME=$(rclone lsf "1drive:LSC_Books" --dirs-only | grep "^${FOLDER_PREFIX}_" | head -n 1 | sed 's/\/$//')
+          TARGET_DIR_NAME=$(rclone lsf "gdrive:LSC_Books" --dirs-only | grep "^${FOLDER_PREFIX}_" | head -n 1 | sed 's/\/$//')
           
           if [ -z "$TARGET_DIR_NAME" ]; then
-            echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in 1drive:LSC_Books."
+            echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in gdrive:LSC_Books."
             exit 1
           fi
           
           echo "Found target directory: $TARGET_DIR_NAME"
-          RCLONE_REMOTE_PATH="1drive:LSC_Books/$TARGET_DIR_NAME"
+          RCLONE_REMOTE_PATH="gdrive:LSC_Books/$TARGET_DIR_NAME"
           
           echo "Starting download from $RCLONE_REMOTE_PATH..."
           rclone copy "$RCLONE_REMOTE_PATH" ./downloads/ --include "*.pdf"
@@ -190,7 +190,7 @@ jobs:
                    "$FINAL_FILE"
           echo "Metadata update complete."
 
-      - name: 7. Upload to OneDrive
+      - name: 7. Upload to Google Drive
         run: |
           FINAL_FILE_PATH="downloads/${{ env.FINAL_FILE_NAME }}"
           echo "Uploading $FINAL_FILE_PATH to ${{ env.RCLONE_DEST_PATH }}..."

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       file_name:
-        description: 'PDF file name inside 1drive:LSC_Merged (e.g. MyBook.pdf)'
+        description: 'PDF file name inside gdrive:LSC_Merged (e.g. MyBook.pdf)'
         required: true
         type: string
       quality:
@@ -29,8 +29,8 @@ jobs:
   compress-pdf:
     runs-on: ubuntu-latest
     env:
-      SOURCE_PATH: "1drive:LSC_Merged"
-      DEST_PATH: "1drive:LSC_Merged/Compress"
+      SOURCE_PATH: "gdrive:LSC_Merged"
+      DEST_PATH: "gdrive:LSC_Merged/Compress"
 
     steps:
       - name: 1. Install Dependencies
@@ -51,7 +51,7 @@ jobs:
       - name: 2. Configure Rclone
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "${{ secrets.RCLONE_CONFIG_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: 3. Download PDF
         run: |

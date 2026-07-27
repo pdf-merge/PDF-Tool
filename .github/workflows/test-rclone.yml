@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_path:
-        description: 'Source GDrive Path (gdrive1:)'
+        description: 'Source GDrive Path (gdrive:)'
         required: true
         default: 'VS_Stock/'
       destination_path:
-        description: 'Destination OneDrive Path (1drive:)'
+        description: 'Destination Google Drive Path (gdrive:)'
         required: true
         default: 'Mirror'
 
@@ -23,7 +23,7 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
         run: |
           mkdir -p ~/.config/rclone
           echo $RCLONE_CONFIG_BASE64 | base64 --decode > ~/.config/rclone/rclone.conf
@@ -32,8 +32,8 @@ jobs:
       - name: Run Rclone Sync
         run: |
           set -o pipefail
-          echo "Starting rclone copy from gdrive1:${{ github.event.inputs.source_path }} to 1drive:${{ github.event.inputs.destination_path }}"
-          rclone copy "gdrive1:${{ github.event.inputs.source_path }}" "1drive:${{ github.event.inputs.destination_path }}" \
+          echo "Starting rclone copy from gdrive:${{ github.event.inputs.source_path }} to gdrive:${{ github.event.inputs.destination_path }}"
+          rclone copy "gdrive:${{ github.event.inputs.source_path }}" "gdrive:${{ github.event.inputs.destination_path }}" \
             --drive-server-side-across-configs=true \
             --transfers 32 \
             --checkers 32 \
@@ -52,6 +52,6 @@ jobs:
           message: |
             *Rclone Job Finished*
             Status: `${{ job.status }}`
-            Source: `gdrive1:${{ github.event.inputs.source_path }}`
-            Destination: `1drive:${{ github.event.inputs.destination_path }}`
+            Source: `gdrive:${{ github.event.inputs.source_path }}`
+            Destination: `gdrive:${{ github.event.inputs.destination_path }}`
             

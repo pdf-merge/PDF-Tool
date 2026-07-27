@@ -92,11 +92,11 @@ jobs:
 
       - name: Setup rclone (base64)
         env:
-          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "$RCLONE_CONFIG_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: Debug rclone
         run: |
@@ -107,8 +107,8 @@ jobs:
         id: set_destination
         run: |
           # This path is used by the Python script to check if a book exists
-          echo "RCLONE_DEST_PATH=1drive1:/LSC_Books" >> $GITHUB_ENV
-          echo "Main check destination set to: 1drive:/LSC_Books"
+          echo "RCLONE_DEST_PATH=gdrive:/LSC_Books" >> $GITHUB_ENV
+          echo "Main check destination set to: gdrive:/LSC_Books"
 
       - name: Run Intelligent Download Script
         id: download_script
@@ -166,7 +166,7 @@ jobs:
         id: upload_no_ocr
         if: steps.metadata_pass_1.conclusion == 'success'
         env:
-          RCLONE_DEST_PATH: "1drive1:/LSC_Books/No_OCR"
+          RCLONE_DEST_PATH: "gdrive:/LSC_Books/No_OCR"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
@@ -238,7 +238,7 @@ jobs:
         id: upload_ocr
         if: steps.metadata_pass_2.conclusion == 'success' && env.PERFORM_OCR == 'yes'
         env:
-          RCLONE_DEST_PATH: "1drive1:/LSC_Books"
+          RCLONE_DEST_PATH: "gdrive:/LSC_Books"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"

@@ -10,12 +10,12 @@ on:
         description: 'Temporary/Default name (e.g., download.zip)'
         required: true
         default: 'download.zip'
-      ONEDRIVE_REMOTE:
+      GDRIVE_REMOTE:
         description: 'Your rclone remote name'
         required: true
-        default: '1drive'
-      ONEDRIVE_PATH:
-        description: 'Folder path on OneDrive'
+        default: 'gdrive'
+      GDRIVE_PATH:
+        description: 'Folder path on Google Drive'
         required: true
         default: 'Mirror'
 env:
@@ -50,15 +50,15 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
         run: |
           mkdir -p ~/.config/rclone
-          echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "$RCLONE_CONFIG_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: Mask Remote Info in Logs
         run: |
-          echo "::add-mask::${{ inputs.ONEDRIVE_REMOTE }}"
-          echo "::add-mask::${{ inputs.ONEDRIVE_PATH }}"
+          echo "::add-mask::${{ inputs.GDRIVE_REMOTE }}"
+          echo "::add-mask::${{ inputs.GDRIVE_PATH }}"
 
       - name: Download, Parse Name, and Rename
         id: parse
@@ -147,7 +147,7 @@ jobs:
           fi
           
           echo "Uploading to rclone remote..."
-          /usr/local/bin/rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}" \
+          /usr/local/bin/rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.GDRIVE_REMOTE }}:${{ inputs.GDRIVE_PATH }}" \
             --multi-thread-streams=32 \
             --multi-thread-cutoff=32M \
             --stats=10s
@@ -162,7 +162,7 @@ jobs:
             ✅ Upload Successful!
             
             File: `${{ steps.parse.outputs.final_name }}`
-            Destination: `${{ inputs.ONEDRIVE_REMOTE }}:${{ inputs.ONEDRIVE_PATH }}`
+            Destination: `${{ inputs.GDRIVE_REMOTE }}:${{ inputs.GDRIVE_PATH }}`
           format: markdown
 
       - name: Send Failure Notification (Build Job)
