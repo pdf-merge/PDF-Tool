@@ -1,0 +1,90 @@
+name: Run LSConedrive
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without moving/deleting files"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+concurrency:
+  group: lsconedrive-mover
+  cancel-in-progress: false
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout LSConedrive repository
+        uses: actions/checkout@v4
+        with:
+          repository: "proplayer1131/LSConedrive"
+          token: ${{ secrets.ACTION_TOKEN }}
+          path: LSConedrive
+
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Restore rclone config
+        env:
+          RCLONE_CONFIG_TEXT: ${{ secrets.RCLONE_CONFIG }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+        run: |
+          set -Eeuo pipefail
+          install -m 700 -d "$HOME/.config/rclone"
+
+          if [[ -n "${RCLONE_CONFIG_BASE64}" ]]; then
+            printf '%s' "$RCLONE_CONFIG_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
+          elif [[ -n "${RCLONE_CONFIG_TEXT}" ]]; then
+            printf '%s\n' "$RCLONE_CONFIG_TEXT" > "$HOME/.config/rclone/rclone.conf"
+          else
+            echo "Missing GitHub secret: set RCLONE_CONFIG_BASE64 or RCLONE_CONFIG." >&2
+            exit 1
+          fi
+
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
+          rclone listremotes
+
+      - name: Restore LSConedrive environment
+        working-directory: LSConedrive
+        env:
+          DOT_ENV_TEXT: ${{ secrets.DOT_ENV }}
+          DOT_ENV_BASE64: ${{ secrets.DOT_ENV_BASE64 }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ -n "${DOT_ENV_BASE64}" ]]; then
+            printf '%s' "$DOT_ENV_BASE64" | base64 -d > .env
+          elif [[ -n "${DOT_ENV_TEXT}" ]]; then
+            printf '%s\n' "$DOT_ENV_TEXT" > .env
+          else
+            echo "Missing GitHub secret: set DOT_ENV_BASE64 or DOT_ENV." >&2
+            exit 1
+          fi
+
+          chmod 600 .env
+          printf '\nDRY_RUN=%s\n' "${{ inputs.dry_run }}" >> .env
+
+      - name: Run LSConedrive mover
+        working-directory: LSConedrive
+        env:
+          WORK_DIR: ${{ runner.temp }}/onedrive_to_gdrive
+        run: ./onedrive_to_gdrive.sh
