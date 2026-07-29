@@ -74,7 +74,7 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONF_BASE64 }}
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
         run: bash dump/scripts/ota_build_ci.sh configure-rclone
 
       - name: Get international base ROM
