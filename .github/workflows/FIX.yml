@@ -74,13 +74,15 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 || secrets.RCLONE_CONFIG_BASE64 }}
         run: bash dump/scripts/ota_build_ci.sh configure-rclone
 
       - name: Get international base ROM
         id: get_rom
         env:
           FILE_PATH: ${{ github.event.inputs.file_path }}
+          ONEDRIVE_MIRROR_REMOTE: ${{ vars.ONEDRIVE_MIRROR_REMOTE || '1drive1:Mirror' }}
+          GDRIVE_STOCK_REMOTE: ${{ vars.GDRIVE_STOCK_REMOTE || 'gdrive1:VS_Stock' }}
         run: bash dump/scripts/ota_build_ci.sh get-base-rom
 
       - name: Get original donor ROM
@@ -88,6 +90,8 @@ jobs:
         id: get_file_2
         env:
           FILE_PATH_2: ${{ github.event.inputs.source_file_2_path }}
+          ONEDRIVE_MIRROR_REMOTE: ${{ vars.ONEDRIVE_MIRROR_REMOTE || '1drive1:Mirror' }}
+          GDRIVE_STOCK_REMOTE: ${{ vars.GDRIVE_STOCK_REMOTE || 'gdrive1:VS_Stock' }}
         run: bash dump/scripts/ota_build_ci.sh get-donor-rom
 
       - name: Extract payload info
@@ -134,14 +138,14 @@ jobs:
         id: fix_ai
         env:
           VERSION: ${{ steps.payload_info.outputs.version }}
-          AI_FIX_REMOTE_DIR: "gdrive1:Mirror/Oxygen/FileFix/AI"
+          AI_FIX_REMOTE_DIR: ${{ vars.AI_FIX_REMOTE_DIR || 'gdrive1:Mirror/Oxygen/FileFix/AI' }}
         run: bash dump/scripts/ota_build_ci.sh apply-ai-fix
 
       - name: Apply LK fix
         id: fix_lk
         env:
           DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
-          LK_FIX_REMOTE_DIR: "gdrive1:Mirror/Oxygen/FileFix/LK"
+          LK_FIX_REMOTE_DIR: ${{ vars.LK_FIX_REMOTE_DIR || 'gdrive1:Mirror/Oxygen/FileFix/LK' }}
         run: bash dump/scripts/ota_build_ci.sh apply-lk-fix
 
       - name: Show organized directory structure
@@ -178,7 +182,7 @@ jobs:
       - name: Upload Dumps
         working-directory: ./dump
         env:
-          RCLONE_DEST: "gdrive1:Mirror/Oxygen"
+          RCLONE_DEST: ${{ vars.RCLONE_UPLOAD_DEST || 'gdrive1:Mirror/Oxygen' }}
           UPLOAD_TARGET: ${{ github.event.inputs.UPLOAD_TARGETS }}
           ARCHIVE_FILE: ${{ steps.repack.outputs.output_file }}
         run: |
