@@ -119,20 +119,22 @@ jobs:
 
       - name: Upload and Update Message
         id: upload
+        env:
+          FINAL_NAME: ${{ steps.parse.outputs.final_name }}
         run: |
-          echo "Updating Telegram message to 'Uploading'..."
-          MSG_ID="${{ steps.send_initial.outputs.message_id }}"
-          
-          if [ -n "$MSG_ID" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-              -d "message_id=$MSG_ID" \
-              -d "text=Uploading: \`${{ steps.parse.outputs.final_name }}\`" \
-              -d "parse_mode=Markdown"
+          if [ -z "$FINAL_NAME" ]; then
+              echo "::error::final_name đang rỗng"
+              exit 1
           fi
-          
+
+          if [ ! -f "$FINAL_NAME" ]; then
+              echo "::error::Không tìm thấy file: $FINAL_NAME"
+              exit 1
+          fi
+
           echo "Uploading to rclone remote..."
-          /usr/local/bin/rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.GDRIVE_REMOTE }}:${{ inputs.GDRIVE_PATH }}" \
+          /usr/local/bin/rclone copy "$FINAL_NAME" \
+            "${{ inputs.GDRIVE_REMOTE }}:${{ inputs.GDRIVE_PATH }}" \
             --multi-thread-streams=32 \
             --multi-thread-cutoff=32M \
             --stats=10s
