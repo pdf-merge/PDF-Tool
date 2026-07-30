@@ -59,37 +59,53 @@ jobs:
           echo "::add-mask::${{ inputs.GDRIVE_PATH }}"
       - name: Download, Parse Name, and Rename
         id: parse
+        env:
+          RAW_DOWNLOAD_URL: ${{ inputs.DOWNLOAD_URL }}
+          RAW_TEMP_NAME: ${{ inputs.TEMP_FILE_NAME }}
         run: |
-          TEMP_NAME="${{ inputs.TEMP_FILE_NAME }}"
-          DOWNLOAD_URL="${{ inputs.DOWNLOAD_URL }}"
-          
-          echo "Starting accelerated download..."
-          aria2c -x 16 -s 16 "$DOWNLOAD_URL"
-          
-          URL_BASENAME=$(basename "$DOWNLOAD_URL" | sed 's/\?.*$//')
-          CURRENT_NAME="$URL_BASENAME"
-          if [ ! -f "$CURRENT_NAME" ]; then
-              FIRST_ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" -print -quit)
-              if [ -n "$FIRST_ZIP_FILE" ]; then
-                  CURRENT_NAME=$(basename "$FIRST_ZIP_FILE")
-                  echo "Warning: Downloaded file name not matching URL. Using found file: $CURRENT_NAME"
-              else
-                  echo "Error: Downloaded file not found. Exiting."
-                  exit 1
-              fi
+          # Xoá khoảng trắng, CR và LF ở đầu/cuối input
+          DOWNLOAD_URL="$(
+            printf '%s' "$RAW_DOWNLOAD_URL" |
+            tr -d '\r\n' |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+          )"
+
+          TEMP_NAME="$(
+            printf '%s' "$RAW_TEMP_NAME" |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+          )"
+
+          if [[ ! "$DOWNLOAD_URL" =~ ^https?:// ]]; then
+              echo "::error::DOWNLOAD_URL không hợp lệ: phải bắt đầu bằng http:// hoặc https://"
+              exit 1
           fi
-          
-          echo "File successfully downloaded as: $CURRENT_NAME (Original Name)"
-          if [ "$TEMP_NAME" != "download.zip" ]; then
-              FINAL_NAME="$TEMP_NAME"
-              PREFIX=""
-              echo "Using user-defined name as final name: $FINAL_NAME (Skipping metadata parsing)."
-              mv "$CURRENT_NAME" "$FINAL_NAME"
-          else
-              echo "Attempting to extract and parse metadata from $CURRENT_NAME..."
-                      
-          echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
-          echo "prefix=$PREFIX" >> $GITHUB_OUTPUT
+
+          URL_BASENAME="$(basename "${DOWNLOAD_URL%%\?*}")"
+
+          if [ -z "$URL_BASENAME" ] || [ "$URL_BASENAME" = "/" ]; then
+              URL_BASENAME="download.zip"
+          fi
+
+          CURRENT_NAME="$URL_BASENAME"
+
+          echo "Starting accelerated download..."
+          echo "Output filename: $CURRENT_NAME"
+
+          aria2c \
+            -x 16 \
+            -s 16 \
+            --max-tries=5 \
+            --retry-wait=5 \
+            --file-allocation=none \
+            -o "$CURRENT_NAME" \
+            "$DOWNLOAD_URL"
+
+          if [ ! -f "$CURRENT_NAME" ]; then
+              echo "::error::Downloaded file not found: $CURRENT_NAME"
+              exit 1
+          fi
+
+          echo "File successfully downloaded as: $CURRENT_NAME"
       - name: Send Initial Telegram Message
         id: send_initial
         uses: appleboy/telegram-action@master
