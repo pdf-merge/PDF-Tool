@@ -240,7 +240,7 @@ jobs:
             --multi-thread-cutoff=32M \
             --buffer-size=64M \
             --drive-chunk-size=256M \
-            --onedrive-chunk-size=256M \
+            --onedrive-chunk-size=320M \
             --log-level NOTICE \
             --stats-one-line \
             --stats 30s \
