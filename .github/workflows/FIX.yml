@@ -269,19 +269,74 @@ jobs:
           fi
           rclone mkdir "$FULL_REMOTE_PATH"
 
+          RCLONE_ARGS=(
+            --log-level NOTICE
+            --stats-one-line
+            --stats 30s
+            --progress
+            --retries=5
+            --low-level-retries=20
+            --retries-sleep=20s
+          )
+          case "$UPLOAD_REMOTE" in
+            1drive|1drive1)
+              RCLONE_ARGS+=(
+                --transfers=1
+                --checkers=4
+                --onedrive-chunk-size=10M
+              )
+              ;;
+            gdrive1|gdrive2)
+              RCLONE_ARGS+=(
+                --transfers=4
+                --checkers=8
+                --multi-thread-streams=16
+                --multi-thread-cutoff=32M
+                --buffer-size=64M
+                --drive-chunk-size=256M
+              )
+              ;;
+          esac
+
+          RCLONE_DIR_ARGS=("${RCLONE_ARGS[@]}")
+          case "$UPLOAD_REMOTE" in
+            1drive|1drive1)
+              RCLONE_DIR_ARGS=(
+                --transfers=2
+                --checkers=4
+                --onedrive-chunk-size=10M
+                --log-level NOTICE
+                --stats-one-line
+                --stats 30s
+                --progress
+                --retries=5
+                --low-level-retries=20
+                --retries-sleep=20s
+              )
+              ;;
+            gdrive1|gdrive2)
+              RCLONE_DIR_ARGS=(
+                --transfers=8
+                --checkers=16
+                --multi-thread-streams=8
+                --multi-thread-cutoff=32M
+                --buffer-size=64M
+                --drive-chunk-size=256M
+                --log-level NOTICE
+                --stats-one-line
+                --stats 30s
+                --progress
+                --retries=5
+                --low-level-retries=20
+                --retries-sleep=20s
+              )
+              ;;
+          esac
+
           if [[ "$UPLOAD_TARGET" == "organized" ]]; then
             if [ -d "organized" ]; then
               rclone copy organized "${FULL_REMOTE_PATH}/organized" \
-                --transfers=16 \
-                --checkers=32 \
-                --multi-thread-streams=16 \
-                --buffer-size=64M \
-                --drive-chunk-size=256M \
-                --onedrive-chunk-size=100M \
-                --log-level NOTICE \
-                --stats-one-line \
-                --stats 30s \
-                --progress
+                "${RCLONE_DIR_ARGS[@]}"
             else
               echo "::error::organized directory not found"
               exit 1
@@ -289,16 +344,7 @@ jobs:
           elif [[ "$UPLOAD_TARGET" == "repacked" ]]; then
             if [ -f "$ARCHIVE_FILE" ]; then
               rclone copyto "$ARCHIVE_FILE" "${FULL_REMOTE_PATH}/$(basename "$ARCHIVE_FILE")" \
-                --transfers=4 \
-                --checkers=8 \
-                --multi-thread-streams=16 \
-                --buffer-size=64M \
-                --drive-chunk-size=256M \
-                --onedrive-chunk-size=100M \
-                --log-level NOTICE \
-                --stats-one-line \
-                --stats 30s \
-                --progress
+                "${RCLONE_ARGS[@]}"
             else
               echo "::error::Archive file not found: $ARCHIVE_FILE"
               exit 1
@@ -306,29 +352,11 @@ jobs:
           elif [[ "$UPLOAD_TARGET" == "both" ]]; then
             if [ -d "organized" ]; then
               rclone copy organized "${FULL_REMOTE_PATH}/organized" \
-                --transfers=16 \
-                --checkers=32 \
-                --multi-thread-streams=16 \
-                --buffer-size=64M \
-                --drive-chunk-size=256M \
-                --onedrive-chunk-size=100M \
-                --log-level NOTICE \
-                --stats-one-line \
-                --stats 30s \
-                --progress
+                "${RCLONE_DIR_ARGS[@]}"
             fi
             if [ -f "$ARCHIVE_FILE" ]; then
               rclone copyto "$ARCHIVE_FILE" "${FULL_REMOTE_PATH}/$(basename "$ARCHIVE_FILE")" \
-                --transfers=4 \
-                --checkers=8 \
-                --multi-thread-streams=16 \
-                --buffer-size=64M \
-                --drive-chunk-size=256M \
-                --onedrive-chunk-size=100M \
-                --log-level NOTICE \
-                --stats-one-line \
-                --stats 30s \
-                --progress
+                "${RCLONE_ARGS[@]}"
             fi
           else
             echo "::error::Unknown upload target: $UPLOAD_TARGET"
