@@ -34,6 +34,16 @@ on:
           - repacked
           - both
         default: 'repacked'
+      UPLOAD_REMOTE:
+        description: 'Select rclone remote for upload.'
+        required: true
+        type: choice
+        options:
+          - 1drive
+          - 1drive1
+          - gdrive1
+          - gdrive2
+        default: '1drive'
 
 env:
   TZ: Asia/Ho_Chi_Minh
@@ -182,10 +192,20 @@ jobs:
       - name: Upload Dumps
         working-directory: ./dump
         env:
-          RCLONE_DEST: ${{ vars.RCLONE_UPLOAD_DEST || 'gdrive1:Mirror/Oxygen' }}
+          UPLOAD_REMOTE: ${{ github.event.inputs.UPLOAD_REMOTE }}
           UPLOAD_TARGET: ${{ github.event.inputs.UPLOAD_TARGETS }}
           ARCHIVE_FILE: ${{ steps.repack.outputs.output_file }}
         run: |
+          case "$UPLOAD_REMOTE" in
+            1drive|1drive1|gdrive1|gdrive2)
+              RCLONE_DEST="${UPLOAD_REMOTE}:Mirror/Oxygen"
+              ;;
+            *)
+              echo "::error::Unknown upload remote: $UPLOAD_REMOTE"
+              exit 1
+              ;;
+          esac
+
           DEVICE_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_DEVICE_FOLDER}"
           FULL_REMOTE_PATH="$DEVICE_REMOTE_PATH"
           UPLOAD_REMOTE_LABEL="$UPLOAD_DEVICE_FOLDER"
