@@ -247,7 +247,34 @@ jobs:
         env:
           DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
           LK_FIX_REMOTE_DIR: 1drive1:Mirror/Oxygen/FileFix/LK
-        run: bash dump/scripts/ota_build_ci.sh apply-lk-fix
+        run: |
+          set -euo pipefail
+          lk_fix_file="$(python3 - "$DEVICE_CODE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          device_code = sys.argv[1]
+          config = json.loads(Path("dump/file_change_config.json").read_text(encoding="utf-8"))
+          print(config.get("device_configs", {}).get(device_code, {}).get("lk_fix_file", ""))
+          PY
+          )"
+
+          if [ -n "$lk_fix_file" ]; then
+            echo "Checking LK fix file: ${LK_FIX_REMOTE_DIR}/${lk_fix_file}"
+            rclone listremotes
+            if ! rclone lsf "${LK_FIX_REMOTE_DIR}" --files-only --include "$lk_fix_file" | grep -qx "$lk_fix_file"; then
+              echo "LK file not found at default path; searching 1drive1"
+              found_lk="$(rclone lsf --recursive --files-only "1drive1:" --include "$lk_fix_file" | grep -m1 "/${lk_fix_file}$" || true)"
+              if [ -n "$found_lk" ]; then
+                LK_FIX_REMOTE_DIR="1drive1:${found_lk%/*}"
+                export LK_FIX_REMOTE_DIR
+                echo "Using discovered LK folder"
+              fi
+            fi
+          fi
+
+          bash dump/scripts/ota_build_ci.sh apply-lk-fix
 
       - name: Show organized directory structure
         run: bash dump/scripts/ota_build_ci.sh show-organized
