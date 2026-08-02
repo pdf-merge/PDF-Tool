@@ -246,7 +246,7 @@ jobs:
         id: fix_lk
         env:
           DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
-          LK_FIX_REMOTE_DIR: ${{ vars.LK_FIX_REMOTE_DIR || 'gdrive1:Mirror/Oxygen/FileFix/LK' }}
+          LK_FIX_REMOTE_DIR: gdrive1:Mirror/Oxygen/FileFix/LK
         run: bash dump/scripts/ota_build_ci.sh apply-lk-fix
 
       - name: Show organized directory structure
