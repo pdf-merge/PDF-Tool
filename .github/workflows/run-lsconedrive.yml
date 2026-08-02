@@ -11,8 +11,6 @@ on:
         options:
           - "true"
           - "false"
-  schedule:
-    - cron: "*/30 * * * *"
 
 concurrency:
   group: onedrive-to-gdrive
