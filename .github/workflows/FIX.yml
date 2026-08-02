@@ -261,6 +261,12 @@ jobs:
           echo "Region folder: ${UPLOAD_REGION:-N/A}"
           echo "Remote path: ${FULL_REMOTE_PATH}"
           echo "Upload target: $UPLOAD_TARGET"
+          echo "Configured remotes:"
+          rclone listremotes
+          if ! rclone listremotes | grep -qx "${UPLOAD_REMOTE}:"; then
+            echo "::error::Rclone remote is not configured: ${UPLOAD_REMOTE}:"
+            exit 1
+          fi
           rclone mkdir "$FULL_REMOTE_PATH"
 
           if [[ "$UPLOAD_TARGET" == "organized" ]]; then
@@ -268,6 +274,10 @@ jobs:
               rclone copy organized "${FULL_REMOTE_PATH}/organized" \
                 --transfers=16 \
                 --checkers=32 \
+                --multi-thread-streams=16 \
+                --buffer-size=64M \
+                --drive-chunk-size=256M \
+                --onedrive-chunk-size=320M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
@@ -281,6 +291,10 @@ jobs:
               rclone copyto "$ARCHIVE_FILE" "${FULL_REMOTE_PATH}/$(basename "$ARCHIVE_FILE")" \
                 --transfers=4 \
                 --checkers=8 \
+                --multi-thread-streams=16 \
+                --buffer-size=64M \
+                --drive-chunk-size=256M \
+                --onedrive-chunk-size=320M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
@@ -294,6 +308,10 @@ jobs:
               rclone copy organized "${FULL_REMOTE_PATH}/organized" \
                 --transfers=16 \
                 --checkers=32 \
+                --multi-thread-streams=16 \
+                --buffer-size=64M \
+                --drive-chunk-size=256M \
+                --onedrive-chunk-size=320M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
@@ -303,6 +321,10 @@ jobs:
               rclone copyto "$ARCHIVE_FILE" "${FULL_REMOTE_PATH}/$(basename "$ARCHIVE_FILE")" \
                 --transfers=4 \
                 --checkers=8 \
+                --multi-thread-streams=16 \
+                --buffer-size=64M \
+                --drive-chunk-size=256M \
+                --onedrive-chunk-size=320M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
