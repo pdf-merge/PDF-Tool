@@ -24,6 +24,16 @@ on:
           - repacked
           - both
         default: 'repacked'
+      UPLOAD_REMOTE:
+        description: 'Select rclone remote for upload.'
+        required: true
+        type: choice
+        options:
+          - 1drive
+          - 1drive1
+          - gdrive1
+          - gdrive2
+        default: '1drive'
 
 env:
   TZ: Asia/Ho_Chi_Minh
@@ -515,8 +525,18 @@ jobs:
       - name: Upload Dumps and Generate Link
         working-directory: ./dump
         env:
-          RCLONE_DEST: "gdrive:Mirror/Oxygen"
+          UPLOAD_REMOTE: ${{ github.event.inputs.UPLOAD_REMOTE }}
         run: |
+          case "$UPLOAD_REMOTE" in
+            1drive|1drive1|gdrive1|gdrive2)
+              RCLONE_DEST="${UPLOAD_REMOTE}:Mirror/Oxygen"
+              ;;
+            *)
+              echo "::error::Unknown upload remote: $UPLOAD_REMOTE"
+              exit 1
+              ;;
+          esac
+
           FULL_REMOTE_PATH="${RCLONE_DEST}/${UPLOAD_FOLDER_NAME}"
           echo "::add-mask::${RCLONE_DEST}"
           echo "::add-mask::${FULL_REMOTE_PATH}"
