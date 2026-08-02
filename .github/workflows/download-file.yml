@@ -239,18 +239,37 @@ jobs:
           fi
 
           rclone mkdir "$REMOTE_DIR"
-          rclone copyto "$FINAL_NAME" "${REMOTE_DIR}/${FINAL_NAME}" \
-            --transfers=4 \
-            --checkers=8 \
-            --multi-thread-streams=16 \
-            --multi-thread-cutoff=32M \
-            --buffer-size=64M \
-            --drive-chunk-size=256M \
-            --onedrive-chunk-size=100M \
-            --log-level NOTICE \
-            --stats-one-line \
-            --stats 30s \
+          RCLONE_ARGS=(
+            --log-level NOTICE
+            --stats-one-line
+            --stats 30s
             --progress
+            --retries=5
+            --low-level-retries=20
+            --retries-sleep=20s
+          )
+          case "$REMOTE_DIR" in
+            1drive:*|1drive1:*)
+              RCLONE_ARGS+=(
+                --transfers=1
+                --checkers=4
+                --onedrive-chunk-size=10M
+              )
+              ;;
+            *)
+              RCLONE_ARGS+=(
+                --transfers=4
+                --checkers=8
+                --multi-thread-streams=16
+                --multi-thread-cutoff=32M
+                --buffer-size=64M
+                --drive-chunk-size=256M
+              )
+              ;;
+          esac
+
+          rclone copyto "$FINAL_NAME" "${REMOTE_DIR}/${FINAL_NAME}" \
+            "${RCLONE_ARGS[@]}"
 
           FILE_COUNT="$(rclone lsf "$REMOTE_DIR" --files-only --include "$FINAL_NAME" 2>/dev/null | wc -l || echo 0)"
           if [ "$FILE_COUNT" -lt 1 ]; then
