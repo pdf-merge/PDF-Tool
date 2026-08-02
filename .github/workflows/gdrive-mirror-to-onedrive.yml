@@ -1,4 +1,4 @@
-name: Copy Google Drive Mirror to OneDrive
+name: Dispatch Google Drive Mirror Files to OneDrive
 
 on:
   workflow_dispatch:
@@ -6,57 +6,38 @@ on:
       source_root:
         description: "Google Drive source folder"
         required: true
-        default: "gdrive:Mirror"
+        default: "gdrive2:Mirror"
       destination_root:
-        description: "OneDrive destination folder, for example 1drive:/Mirror"
+        description: "OneDrive destination folder"
         required: true
         default: "1drive:/Mirror"
-      dry_run:
-        description: "Preview only, do not copy files"
+      max_files:
+        description: "Limit files to dispatch, 0 means all"
         required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
+        default: "0"
       delete_source:
-        description: "Delete files from Google Drive after verified upload"
+        description: "Delete source file after verified upload"
         required: true
         default: "false"
         type: choice
         options:
           - "false"
           - "true"
-      batch_local_bytes:
-        description: "Max local staging size per batch"
-        required: true
-        default: "50G"
+
+permissions:
+  actions: write
+  contents: read
 
 concurrency:
-  group: gdrive-mirror-to-onedrive
+  group: dispatch-gdrive-mirror-to-onedrive
   cancel-in-progress: false
 
 jobs:
-  copy:
+  dispatch:
     runs-on: ubuntu-latest
     timeout-minutes: 330
 
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 4096
-          swap-size-mb: 1024
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-
-      - name: Checkout LSConedrive repository
-        uses: actions/checkout@v4
-        with:
-          repository: "proplayer1131/LSConedrive"
-          token: ${{ secrets.ACTION_TOKEN }}
-
       - name: Install rclone
         run: |
           sudo apt-get update
@@ -82,35 +63,54 @@ jobs:
           chmod 600 "$HOME/.config/rclone/rclone.conf"
           rclone listremotes
 
-      - name: Write transfer environment
+      - name: Dispatch one workflow per file
         env:
-          SOURCE_ROOT_INPUT: ${{ inputs.source_root }}
-          DEST_ROOT_INPUT: ${{ inputs.destination_root }}
-          DRY_RUN_INPUT: ${{ inputs.dry_run }}
-          DELETE_SOURCE_INPUT: ${{ inputs.delete_source }}
-          BATCH_LOCAL_BYTES_INPUT: ${{ inputs.batch_local_bytes }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_ROOT: ${{ inputs.source_root }}
+          DEST_ROOT: ${{ inputs.destination_root }}
+          MAX_FILES: ${{ inputs.max_files }}
+          DELETE_SOURCE: ${{ inputs.delete_source }}
         run: |
           set -Eeuo pipefail
-          : > .env
 
-          write_env() {
-            printf '%s=%q\n' "$1" "$2" >> .env
-          }
+          rclone lsf "$SOURCE_ROOT" --recursive --files-only > files.txt
 
-          write_env SOURCE_ROOT "$SOURCE_ROOT_INPUT"
-          write_env DEST_ROOT "$DEST_ROOT_INPUT"
-          write_env DRY_RUN "$DRY_RUN_INPUT"
-          write_env DELETE_SOURCE "$DELETE_SOURCE_INPUT"
-          write_env DELETE_EMPTY_SOURCE_DIRS "$DELETE_SOURCE_INPUT"
-          write_env VERIFY_UPLOAD true
-          write_env LIST_METHOD rclone
-          write_env PARALLEL_FILES 16
-          write_env TRANSFER_MODE batch
-          write_env BATCH_LOCAL_BYTES "$BATCH_LOCAL_BYTES_INPUT"
-          write_env DRY_RUN_LIMIT 20
-          write_env RCLONE_FLAGS "--drive-use-trash=false --transfers=1 --checkers=8 --multi-thread-streams=4 --multi-thread-cutoff=32M --drive-chunk-size=256M --onedrive-chunk-size=100M --drive-pacer-min-sleep=10ms --drive-pacer-burst=200 --retries=10 --retries-sleep=20s --low-level-retries=20"
+          if [[ "$MAX_FILES" =~ ^[0-9]+$ ]] && [[ "$MAX_FILES" -gt 0 ]]; then
+            head -n "$MAX_FILES" files.txt > limited.txt
+            mv limited.txt files.txt
+          fi
 
-      - name: Run Google Drive to OneDrive copy
-        env:
-          WORK_DIR: ${{ github.workspace }}/gdrive_mirror_to_onedrive
-        run: ./onedrive_to_gdrive.sh
+          total="$(wc -l < files.txt | tr -d ' ')"
+          echo "Dispatching $total file workflow(s)"
+
+          index=0
+          while IFS= read -r file_path; do
+            [[ -n "$file_path" ]] || continue
+            index=$((index + 1))
+            echo "Dispatch $index/$total: $file_path"
+
+            jq -n \
+              --arg ref "${GITHUB_REF_NAME:-main}" \
+              --arg source_root "$SOURCE_ROOT" \
+              --arg destination_root "$DEST_ROOT" \
+              --arg file_path "$file_path" \
+              --arg delete_source "$DELETE_SOURCE" \
+              '{
+                ref: $ref,
+                inputs: {
+                  source_root: $source_root,
+                  destination_root: $destination_root,
+                  file_path: $file_path,
+                  delete_source: $delete_source
+                }
+              }' > payload.json
+
+            curl -fsS -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/copy-gdrive-mirror-one-file.yml/dispatches" \
+              -d @payload.json
+
+            sleep 1
+          done < files.txt

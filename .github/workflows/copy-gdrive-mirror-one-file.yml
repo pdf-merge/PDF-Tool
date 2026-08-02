@@ -1,0 +1,138 @@
+name: Copy One Google Drive Mirror File to OneDrive
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_root:
+        description: "Google Drive source folder"
+        required: true
+        default: "gdrive2:Mirror"
+      destination_root:
+        description: "OneDrive destination folder"
+        required: true
+        default: "1drive:/Mirror"
+      file_path:
+        description: "Relative file path to copy"
+        required: true
+      delete_source:
+        description: "Delete source file after verified upload"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: copy-gdrive-mirror-one-file-${{ inputs.file_path }}
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Restore rclone config
+        env:
+          RCLONE_CONFIG_TEXT: ${{ secrets.RCLONE_CONFIG }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE642 }}
+        run: |
+          set -Eeuo pipefail
+          install -m 700 -d "$HOME/.config/rclone"
+
+          if [[ -n "${RCLONE_CONFIG_BASE64}" ]]; then
+            printf '%s' "$RCLONE_CONFIG_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
+          elif [[ -n "${RCLONE_CONFIG_TEXT}" ]]; then
+            printf '%s\n' "$RCLONE_CONFIG_TEXT" > "$HOME/.config/rclone/rclone.conf"
+          else
+            echo "Missing GitHub secret: set RCLONE_CONFIG_BASE642 or RCLONE_CONFIG." >&2
+            exit 1
+          fi
+
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
+          rclone listremotes
+
+      - name: Copy one file
+        env:
+          SOURCE_ROOT: ${{ inputs.source_root }}
+          DEST_ROOT: ${{ inputs.destination_root }}
+          FILE_PATH: ${{ inputs.file_path }}
+          DELETE_SOURCE: ${{ inputs.delete_source }}
+          RCLONE_FLAGS: "--drive-use-trash=false --transfers=1 --checkers=8 --multi-thread-streams=4 --multi-thread-cutoff=32M --drive-chunk-size=256M --onedrive-chunk-size=100M --drive-pacer-min-sleep=10ms --drive-pacer-burst=200 --retries=10 --retries-sleep=20s --low-level-retries=20"
+        run: |
+          set -Eeuo pipefail
+
+          bool_is_true() {
+            case "${1,,}" in
+              true | 1 | yes | y | on) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          join_remote_path() {
+            local root="$1"
+            local rel="$2"
+            root="${root%/}"
+            rel="${rel#/}"
+
+            if [[ "$root" == *: ]]; then
+              printf '%s%s' "$root" "$rel"
+            else
+              printf '%s/%s' "$root" "$rel"
+            fi
+          }
+
+          run_rclone() {
+            # Intentional word splitting for RCLONE_FLAGS.
+            # shellcheck disable=SC2086
+            rclone $RCLONE_FLAGS "$@"
+          }
+
+          src="$(join_remote_path "$SOURCE_ROOT" "$FILE_PATH")"
+          dst="$(join_remote_path "$DEST_ROOT" "$FILE_PATH")"
+          work_dir="$(mktemp -d)"
+          local_file="$work_dir/files/$FILE_PATH"
+          mkdir -p "$(dirname "$local_file")"
+
+          cleanup() {
+            rm -rf "$work_dir"
+          }
+          trap cleanup EXIT
+
+          echo "File: $FILE_PATH"
+          echo "From: $src"
+          echo "To:   $dst"
+
+          run_rclone copyto "$src" "$local_file"
+          local_size="$(stat -c '%s' "$local_file")"
+          echo "Downloaded bytes: $local_size"
+
+          run_rclone copyto "$local_file" "$dst"
+          remote_json="$(run_rclone size "$dst" --json)"
+          remote_size="$(printf '%s\n' "$remote_json" | sed -n 's/.*"bytes":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+
+          if [[ -z "$remote_size" || "$local_size" != "$remote_size" ]]; then
+            echo "Verify failed: local=$local_size remote=${remote_size:-missing}" >&2
+            exit 1
+          fi
+
+          if bool_is_true "$DELETE_SOURCE"; then
+            run_rclone deletefile "$src"
+          fi
+
+          echo "Copied and verified"
