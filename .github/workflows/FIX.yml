@@ -277,7 +277,7 @@ jobs:
                 --multi-thread-streams=16 \
                 --buffer-size=64M \
                 --drive-chunk-size=256M \
-                --onedrive-chunk-size=320M \
+                --onedrive-chunk-size=100M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
@@ -294,7 +294,7 @@ jobs:
                 --multi-thread-streams=16 \
                 --buffer-size=64M \
                 --drive-chunk-size=256M \
-                --onedrive-chunk-size=320M \
+                --onedrive-chunk-size=100M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
@@ -311,7 +311,7 @@ jobs:
                 --multi-thread-streams=16 \
                 --buffer-size=64M \
                 --drive-chunk-size=256M \
-                --onedrive-chunk-size=320M \
+                --onedrive-chunk-size=100M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
@@ -324,7 +324,7 @@ jobs:
                 --multi-thread-streams=16 \
                 --buffer-size=64M \
                 --drive-chunk-size=256M \
-                --onedrive-chunk-size=320M \
+                --onedrive-chunk-size=100M \
                 --log-level NOTICE \
                 --stats-one-line \
                 --stats 30s \
