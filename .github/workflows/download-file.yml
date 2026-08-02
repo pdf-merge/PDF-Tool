@@ -1,31 +1,53 @@
-name: DL OTA FILE 
+name: DL OTA FILE
 
 on:
   workflow_dispatch:
     inputs:
       DOWNLOAD_URL:
-        description: 'Direct Download Link (to .zip file)'
+        description: 'Direct download link'
         required: true
+        type: string
       TEMP_FILE_NAME:
-        description: 'Temporary/Default name (e.g., download.zip)'
+        description: 'Final file name, or download.zip to parse OTA metadata'
         required: true
+        type: string
         default: 'download.zip'
-      GDRIVE_REMOTE:
-        description: 'Your rclone remote name'
-        required: true
-        default: 'gdrive'
-      GDRIVE_PATH:
-        description: 'Folder path on Google Drive'
-        required: true
+      UPLOAD_REMOTE:
+        description: 'Upload rclone remote'
+        required: false
+        type: choice
+        options:
+          - 1drive
+          - 1drive1
+          - gdrive
+          - gdrive1
+          - gdrive2
+        default: 'gdrive1'
+      UPLOAD_PATH:
+        description: 'Folder path in selected remote'
+        required: false
+        type: string
         default: 'Mirror'
+      GDRIVE_REMOTE:
+        description: 'Legacy rclone remote name'
+        required: false
+        type: string
+        default: ''
+      GDRIVE_PATH:
+        description: 'Legacy folder path'
+        required: false
+        type: string
+        default: ''
+
 env:
   TZ: Asia/Ho_Chi_Minh
 
 jobs:
-  build:
+  download-and-upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 720
+
     outputs:
-      message_id: ${{ steps.send_initial.outputs.message_id }}
       final_name: ${{ steps.parse.outputs.final_name }}
 
     steps:
@@ -34,92 +56,152 @@ jobs:
 
       - name: Install Tools
         run: |
+          set -euo pipefail
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
           sudo apt-get update
-          sudo apt-get install -y unzip aria2
-          curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
-          unzip rclone-current-linux-amd64.zip
-          cd rclone-*-linux-amd64
-          
-          sudo cp rclone /usr/local/bin/
-          sudo chown root:root /usr/local/bin/rclone
-          sudo chmod 755 /usr/local/bin/rclone
-          
-          sudo ln -sf /usr/local/bin/rclone /usr/bin/rclone
-          
+          sudo apt-get install -y --no-install-recommends aria2 curl unzip jq ca-certificates
+          curl -fsSL https://rclone.org/install.sh | sudo bash
           rclone version
 
       - name: Configure rclone
         env:
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 || secrets.RCLONE_CONFIG_BASE64 }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config/rclone
+          if [ -z "${RCLONE_CONFIG_BASE64:-}" ]; then
+            echo "::error::RCLONE_CONFIG_BASE64 secret is empty"
+            exit 1
+          fi
           echo "$RCLONE_CONFIG_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+          if [ ! -s ~/.config/rclone/rclone.conf ]; then
+            echo "::error::Could not create rclone.conf"
+            exit 1
+          fi
+          rclone listremotes
 
-      - name: Mask Remote Info in Logs
+      - name: Resolve Upload Destination
+        id: destination
+        env:
+          INPUT_UPLOAD_REMOTE: ${{ inputs.UPLOAD_REMOTE }}
+          INPUT_UPLOAD_PATH: ${{ inputs.UPLOAD_PATH }}
+          LEGACY_GDRIVE_REMOTE: ${{ inputs.GDRIVE_REMOTE }}
+          LEGACY_GDRIVE_PATH: ${{ inputs.GDRIVE_PATH }}
         run: |
-          echo "::add-mask::${{ inputs.GDRIVE_REMOTE }}"
-          echo "::add-mask::${{ inputs.GDRIVE_PATH }}"
+          set -euo pipefail
+          UPLOAD_REMOTE="${INPUT_UPLOAD_REMOTE:-}"
+          UPLOAD_PATH="${INPUT_UPLOAD_PATH:-}"
+
+          if [ -n "${LEGACY_GDRIVE_REMOTE:-}" ]; then
+            UPLOAD_REMOTE="$LEGACY_GDRIVE_REMOTE"
+          fi
+          if [ -n "${LEGACY_GDRIVE_PATH:-}" ]; then
+            UPLOAD_PATH="$LEGACY_GDRIVE_PATH"
+          fi
+
+          UPLOAD_REMOTE="${UPLOAD_REMOTE:-gdrive1}"
+          UPLOAD_PATH="${UPLOAD_PATH:-Mirror}"
+          UPLOAD_PATH="${UPLOAD_PATH#/}"
+          UPLOAD_PATH="${UPLOAD_PATH%/}"
+
+          case "$UPLOAD_REMOTE" in
+            1drive|1drive1|gdrive|gdrive1|gdrive2)
+              ;;
+            *)
+              echo "::error::Unknown upload remote: $UPLOAD_REMOTE"
+              exit 1
+              ;;
+          esac
+
+          if ! rclone listremotes | grep -qx "${UPLOAD_REMOTE}:"; then
+            echo "::error::Rclone remote is not configured: ${UPLOAD_REMOTE}:"
+            exit 1
+          fi
+
+          if [ -z "$UPLOAD_PATH" ]; then
+            REMOTE_DIR="${UPLOAD_REMOTE}:"
+          else
+            REMOTE_DIR="${UPLOAD_REMOTE}:${UPLOAD_PATH}"
+          fi
+
+          echo "::add-mask::$REMOTE_DIR"
+          echo "remote=$UPLOAD_REMOTE" >> "$GITHUB_OUTPUT"
+          echo "path=$UPLOAD_PATH" >> "$GITHUB_OUTPUT"
+          echo "remote_dir=$REMOTE_DIR" >> "$GITHUB_OUTPUT"
+          echo "Upload destination resolved"
 
       - name: Download, Parse Name, and Rename
         id: parse
+        env:
+          DOWNLOAD_URL: ${{ inputs.DOWNLOAD_URL }}
+          TEMP_FILE_NAME: ${{ inputs.TEMP_FILE_NAME }}
         run: |
-          TEMP_NAME="${{ inputs.TEMP_FILE_NAME }}"
-          DOWNLOAD_URL="${{ inputs.DOWNLOAD_URL }}"
-          
-          echo "Starting accelerated download..."
-          aria2c -x 16 -s 16 "$DOWNLOAD_URL"
-          
-          URL_BASENAME=$(basename "$DOWNLOAD_URL" | sed 's/\?.*$//')
-          CURRENT_NAME="$URL_BASENAME"
+          set -euo pipefail
+          echo "::add-mask::$DOWNLOAD_URL"
 
-          if [ ! -f "$CURRENT_NAME" ]; then
-              FIRST_ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" -print -quit)
-              if [ -n "$FIRST_ZIP_FILE" ]; then
-                  CURRENT_NAME=$(basename "$FIRST_ZIP_FILE")
-                  echo "Warning: Downloaded file name not matching URL. Using found file: $CURRENT_NAME"
-              else
-                  echo "Error: Downloaded file not found. Exiting."
-                  exit 1
-              fi
+          REQUESTED_NAME="$(basename "${TEMP_FILE_NAME:-download.zip}")"
+          if [ -z "$REQUESTED_NAME" ] || [ "$REQUESTED_NAME" = "." ] || [ "$REQUESTED_NAME" = "/" ]; then
+            REQUESTED_NAME="download.zip"
           fi
-          
-          echo "File successfully downloaded as: $CURRENT_NAME (Original Name)"
+          case "$REQUESTED_NAME" in
+            *.zip) ;;
+            *) REQUESTED_NAME="${REQUESTED_NAME}.zip" ;;
+          esac
 
+          DOWNLOAD_NAME="download.zip"
+          echo "Starting accelerated download"
+          aria2c \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=1M \
+            --max-tries=5 \
+            --retry-wait=10 \
+            --file-allocation=none \
+            --summary-interval=10 \
+            -o "$DOWNLOAD_NAME" \
+            "$DOWNLOAD_URL"
 
-          if [ "$TEMP_NAME" != "download.zip" ]; then
-              FINAL_NAME="$TEMP_NAME"
-              PREFIX=""
-              echo "Using user-defined name as final name: $FINAL_NAME (Skipping metadata parsing)."
-              mv "$CURRENT_NAME" "$FINAL_NAME"
+          if [ ! -s "$DOWNLOAD_NAME" ]; then
+            echo "::error::Downloaded file is missing or empty"
+            exit 1
+          fi
+
+          if ! unzip -t "$DOWNLOAD_NAME" >/dev/null; then
+            echo "::error::Downloaded file is not a valid zip archive"
+            exit 1
+          fi
+
+          if [ "$REQUESTED_NAME" != "download.zip" ]; then
+            FINAL_NAME="$REQUESTED_NAME"
+            mv "$DOWNLOAD_NAME" "$FINAL_NAME"
+            echo "Using requested final name"
           else
-              echo "Attempting to extract and parse metadata from $CURRENT_NAME..."
-              
-              if unzip -l "$CURRENT_NAME" | grep -q "META-INF/com/android/metadata"; then
-                  unzip -p "$CURRENT_NAME" META-INF/com/android/metadata 2>/dev/null | grep 'version_name_show=' > metadata_line.txt
-              else
-                  echo "Metadata file not found inside zip."
-                  echo "" > metadata_line.txt
+            FINAL_NAME=""
+            if unzip -l "$DOWNLOAD_NAME" META-INF/com/android/metadata >/dev/null 2>&1; then
+              METADATA_VERSION="$(unzip -p "$DOWNLOAD_NAME" META-INF/com/android/metadata 2>/dev/null | sed -n 's/^version_name_show=\(.*\)$/\1/p' | head -n1)"
+              if [ -n "$METADATA_VERSION" ]; then
+                SAFE_VERSION="$(printf '%s' "$METADATA_VERSION" | tr -d '\r' | sed 's/[\/:*?"<>|]/_/g')"
+                FINAL_NAME="${SAFE_VERSION}.zip"
               fi
-              
-              BASE_NAME=""
-              if [ -s metadata_line.txt ]; then
-                  BASE_NAME=$(cat metadata_line.txt | sed -n 's/version_name_show=\(.*\)(.*)/\1/p')
-              fi
-              
-              PREFIX=""
-              if [ -n "$BASE_NAME" ]; then
-                  FINAL_NAME="${BASE_NAME}.zip"
-                  echo "Successfully parsed name. Renaming '$CURRENT_NAME' to: $FINAL_NAME"
-                  mv "$CURRENT_NAME" "$FINAL_NAME"
-                  PREFIX=$(echo "$FINAL_NAME" | awk -F'_' '{print $1}')_
-              else
-                  FINAL_NAME="$CURRENT_NAME"
-                  echo "Warning: Could not parse metadata. Keeping original filename: $FINAL_NAME"
-              fi
+            fi
+
+            if [ -z "$FINAL_NAME" ]; then
+              URL_NAME="$(basename "${DOWNLOAD_URL%%\?*}")"
+              case "$URL_NAME" in
+                ""|downloadCheck|download|.) URL_NAME="download.zip" ;;
+              esac
+              case "$URL_NAME" in
+                *.zip) FINAL_NAME="$URL_NAME" ;;
+                *) FINAL_NAME="${URL_NAME}.zip" ;;
+              esac
+            fi
+
+            mv "$DOWNLOAD_NAME" "$FINAL_NAME"
           fi
-          
-          echo "final_name=$FINAL_NAME" >> $GITHUB_OUTPUT
-          echo "prefix=$PREFIX" >> $GITHUB_OUTPUT
+
+          echo "final_name=$FINAL_NAME" >> "$GITHUB_OUTPUT"
+          ls -lh "$FINAL_NAME"
 
       - name: Send Initial Telegram Message
         id: send_initial
@@ -134,23 +216,41 @@ jobs:
 
       - name: Upload and Update Message
         id: upload
+        env:
+          FINAL_NAME: ${{ steps.parse.outputs.final_name }}
+          REMOTE_DIR: ${{ steps.destination.outputs.remote_dir }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MESSAGE_ID: ${{ steps.send_initial.outputs.message_id }}
         run: |
-          echo "Updating Telegram message to 'Uploading'..."
-          MSG_ID="${{ steps.send_initial.outputs.message_id }}"
-          
-          if [ -n "$MSG_ID" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/editMessageText" \
-              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-              -d "message_id=$MSG_ID" \
-              -d "text=Uploading: \`${{ steps.parse.outputs.final_name }}\`" \
-              -d "parse_mode=Markdown"
+          set -euo pipefail
+          if [ -n "${MESSAGE_ID:-}" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageText" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "message_id=${MESSAGE_ID}" \
+              -d "text=Uploading: \`${FINAL_NAME}\`" \
+              -d "parse_mode=Markdown" >/dev/null || true
           fi
-          
-          echo "Uploading to rclone remote..."
-          /usr/local/bin/rclone copy "${{ steps.parse.outputs.final_name }}" "${{ inputs.GDRIVE_REMOTE }}:${{ inputs.GDRIVE_PATH }}" \
-            --multi-thread-streams=32 \
+
+          rclone mkdir "$REMOTE_DIR"
+          rclone copyto "$FINAL_NAME" "${REMOTE_DIR}/${FINAL_NAME}" \
+            --transfers=4 \
+            --checkers=8 \
+            --multi-thread-streams=16 \
             --multi-thread-cutoff=32M \
-            --stats=10s
+            --buffer-size=64M \
+            --drive-chunk-size=256M \
+            --onedrive-chunk-size=256M \
+            --log-level NOTICE \
+            --stats-one-line \
+            --stats 30s \
+            --progress
+
+          FILE_COUNT="$(rclone lsf "$REMOTE_DIR" --files-only --include "$FINAL_NAME" 2>/dev/null | wc -l || echo 0)"
+          if [ "$FILE_COUNT" -lt 1 ]; then
+            echo "::error::Upload verification failed for ${REMOTE_DIR}/${FINAL_NAME}"
+            exit 1
+          fi
 
       - name: Send Success Notification
         if: success()
@@ -159,22 +259,22 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
-            ✅ Upload Successful!
-            
+            Upload successful.
+
             File: `${{ steps.parse.outputs.final_name }}`
-            Destination: `${{ inputs.GDRIVE_REMOTE }}:${{ inputs.GDRIVE_PATH }}`
+            Destination: `${{ steps.destination.outputs.remote_dir }}`
           format: markdown
 
-      - name: Send Failure Notification (Build Job)
-        if: failure() && steps.upload.outcome == 'failure'
+      - name: Send Failure Notification
+        if: failure()
         uses: appleboy/telegram-action@master
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
-            ❌ Upload FAILED in Build Job!
-            
+            Upload failed.
+
             Workflow: ${{ github.workflow }}
             Run ID: ${{ github.run_id }}
-            Reason: Check logs for details.
+            Check logs for details.
           format: markdown
