@@ -181,7 +181,7 @@ jobs:
             if unzip -l "$DOWNLOAD_NAME" META-INF/com/android/metadata >/dev/null 2>&1; then
               METADATA_VERSION="$(unzip -p "$DOWNLOAD_NAME" META-INF/com/android/metadata 2>/dev/null | sed -n 's/^version_name_show=\(.*\)$/\1/p' | head -n1)"
               if [ -n "$METADATA_VERSION" ]; then
-                SAFE_VERSION="$(printf '%s' "$METADATA_VERSION" | tr -d '\r' | sed 's/[\/:*?"<>|]/_/g')"
+                SAFE_VERSION="$(printf '%s' "$METADATA_VERSION" | tr -d '\r' | sed 's/[\/:*?"<>|()]/_/g; s/__*/_/g; s/_$//')"
                 FINAL_NAME="${SAFE_VERSION}.zip"
               fi
             fi
@@ -198,6 +198,12 @@ jobs:
             fi
 
             mv "$DOWNLOAD_NAME" "$FINAL_NAME"
+          fi
+
+          SAFE_FINAL_NAME="$(printf '%s' "$FINAL_NAME" | sed 's/[\/:*?"<>|()]/_/g; s/__*/_/g; s/_\\.zip$/.zip/')"
+          if [ "$SAFE_FINAL_NAME" != "$FINAL_NAME" ]; then
+            mv "$FINAL_NAME" "$SAFE_FINAL_NAME"
+            FINAL_NAME="$SAFE_FINAL_NAME"
           fi
 
           echo "final_name=$FINAL_NAME" >> "$GITHUB_OUTPUT"
