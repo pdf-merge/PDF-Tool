@@ -69,6 +69,97 @@ jobs:
           repository: 'proplayer1131/FFF_2026'
           token: ${{ secrets.ACTION_TOKEN || github.token }}
 
+      - name: Normalize FFF CI config
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config_path = Path("dump/file_change_config.json")
+          config = json.loads(config_path.read_text(encoding="utf-8"))
+          device_configs = config.setdefault("device_configs", {})
+
+          x9p = device_configs.setdefault("CPH2791", {})
+          x9p["lk_fix_file"] = "x9p.img"
+          x9p["variant_labels"] = {
+              "NONE": "1Sim_OTA",
+              "MCF_OTA": "2SIM_NoOTA",
+              "MCF_OTA,MODEM": "2SIM_mo_NoOTA",
+          }
+
+          required_lk = {
+              "CPH2651": "x8.img",
+              "CPH2659": "x8p.img",
+              "CPH2797": "x9.img",
+              "CPH2791": "x9p.img",
+          }
+          for device_code, lk_file in required_lk.items():
+              device_configs.setdefault(device_code, {})["lk_fix_file"] = lk_file
+
+          config_path.write_text(
+              json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script_path = Path("dump/scripts/ota_build_ci.sh")
+          text = script_path.read_text(encoding="utf-8")
+
+          start = text.index("rclone_copyto_fast() {")
+          end = text.index("\n}\n\n", start) + 3
+          replacement = '''rclone_copyto_fast() {
+            local source="$1"
+            local target="$2"
+
+            local rclone_args=(
+              --progress
+              --stats 10s
+              --retries=5
+              --low-level-retries=20
+              --retries-sleep=20s
+            )
+
+            case "$source" in
+              1drive:*|1drive1:*)
+                rclone_args+=(
+                  --transfers=1
+                  --checkers=4
+                  --onedrive-chunk-size=10M
+                )
+                ;;
+              *)
+                rclone_args+=(
+                  --transfers=4
+                  --checkers=8
+                  --multi-thread-streams=16
+                  --buffer-size=64M
+                  --drive-chunk-size=256M
+                )
+                ;;
+            esac
+
+            rclone copyto "$source" "$target" "${rclone_args[@]}"
+          }'''
+          text = text[:start] + replacement + text[end:]
+
+          if "rot_boot_fw.img" not in text or "rot_boot_fmc.img" not in text:
+              raise SystemExit("Could not verify rot_boot prune block")
+
+          if "lk_target=\"organized/CRITICAL/lk.img\"" not in text:
+              raise SystemExit("Could not verify LK target path")
+          if "Removed old boot-chain image" not in text:
+              raise SystemExit("Could not verify LK replacement cleanup block")
+
+          script_path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 dump/build_output_name.py --config dump/file_change_config.json --device-code CPH2791 --version 'CPH2791_16.0.9.400(EX01)' --file-types MCF_OTA --region VN
+          python3 dump/build_output_name.py --config dump/file_change_config.json --device-code CPH2791 --version 'CPH2791_16.0.9.400(EX01)' --file-types MCF_OTA,MODEM --region VN
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
