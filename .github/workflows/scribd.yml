@@ -41,6 +41,7 @@ jobs:
       id: downloader
       env:
         PUPPETEER_HEADLESS: 'false'
+        SCRIBD_COOKIES: ${{ secrets.SCRIBD_COOKIES }}
       run: xvfb-run -a npm start "${{ steps.normalize.outputs.url }}"
 
     - name: Install and configure rclone
