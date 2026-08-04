@@ -39,7 +39,9 @@ jobs:
 
     - name: Run downloader
       id: downloader
-      run: npm start "${{ steps.normalize.outputs.url }}"
+      env:
+        PUPPETEER_HEADLESS: 'false'
+      run: xvfb-run -a npm start "${{ steps.normalize.outputs.url }}"
 
     - name: Install and configure rclone
       env:
