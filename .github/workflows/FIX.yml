@@ -25,6 +25,11 @@ on:
         required: false
         type: boolean
         default: false
+      FAST_MODE:
+        description: 'No archive password and fastest 7z compression; output ends with _fast.7z'
+        required: false
+        type: boolean
+        default: false
       UPLOAD_TARGETS:
         description: 'Select which directories to upload.'
         required: true
@@ -154,7 +159,52 @@ jobs:
           if "Removed old boot-chain image" not in text:
               raise SystemExit("Could not verify LK replacement cleanup block")
 
+          marker = '  local archive_build_date\n'
+          if marker not in text:
+              raise SystemExit("Could not verify repack archive_build_date block")
+          text = text.replace(
+              marker,
+              '''  local fast_mode="${FAST_MODE:-false}"\n  local archive_build_date\n''',
+              1,
+          )
+
+          text = text.replace(
+              '''  ZIP_PASSWORD="BrickOK${archive_build_date}"\n  export ZIP_PASSWORD\n  echo "::add-mask::${ZIP_PASSWORD}"\n  echo "Archive password configured"\n''',
+              '''  if [ "$fast_mode" = "true" ]; then\n    ZIP_PASSWORD=""\n    echo "Fast mode enabled: archive password disabled"\n  else\n    ZIP_PASSWORD="BrickOK${archive_build_date}"\n    echo "::add-mask::${ZIP_PASSWORD}"\n    echo "Archive password configured"\n  fi\n  export ZIP_PASSWORD\n''',
+              1,
+          )
+
+          text = text.replace(
+              '''  local archive_name="${output_name%.zip}_${archive_build_date}.7z"\n\n  local repack_args=(\n    --original-zip ../rom.zip\n    --organized-dir organized\n    --output "$output_name"\n    --root-folder "$root_folder"\n    --password-env ZIP_PASSWORD\n    --date-suffix "$archive_build_date"\n  )\n''',
+              '''  local archive_name="${output_name%.zip}_${archive_build_date}.7z"\n  local repack_output="$output_name"\n  local repack_date_args=(--date-suffix "$archive_build_date")\n  if [ "$fast_mode" = "true" ]; then\n    archive_name="${output_name%.zip}_${archive_build_date}_fast.7z"\n    repack_output="$archive_name"\n    repack_date_args=()\n  fi\n\n  local repack_args=(\n    --original-zip ../rom.zip\n    --organized-dir organized\n    --output "$repack_output"\n    --root-folder "$root_folder"\n    --password-env ZIP_PASSWORD\n    "${repack_date_args[@]}"\n  )\n''',
+              1,
+          )
+
+          text = text.replace(
+              '''  "$seven_zip" t "-p${ZIP_PASSWORD}" "$archive_name"\n  echo "Archive verified with password. Header encryption hides file names until password is entered."\n''',
+              '''  if [ -n "$ZIP_PASSWORD" ]; then\n    "$seven_zip" t "-p${ZIP_PASSWORD}" "$archive_name"\n    echo "Archive verified with password. Header encryption hides file names until password is entered."\n  else\n    "$seven_zip" t "$archive_name"\n    echo "Archive verified without password."\n  fi\n''',
+              1,
+          )
+
           script_path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          repack_path = Path("dump/repack_payload.py")
+          text = repack_path.read_text(encoding="utf-8")
+          text = text.replace(
+              "MAX_7Z_COMPRESSION_LEVEL = 9",
+              "MAX_7Z_COMPRESSION_LEVEL = int(__import__('os').environ.get('FAST_7Z_LEVEL', '9'))",
+              1,
+          )
+          text = text.replace(
+              'MAX_7Z_DICTIONARY_SIZE = "256m"',
+              'MAX_7Z_DICTIONARY_SIZE = __import__("os").environ.get("FAST_7Z_DICTIONARY_SIZE", "256m")',
+              1,
+          )
+          repack_path.write_text(text, encoding="utf-8")
           PY
 
           python3 dump/build_output_name.py --config dump/file_change_config.json --device-code CPH2791 --version 'CPH2791_16.0.9.400(EX01)' --file-types MCF_OTA --region VN
@@ -296,6 +346,9 @@ jobs:
           REPLACED_TYPES: ${{ steps.copy_partitions.outputs.file_types_replaced }}
           AI_FIX_REPLACED: ${{ steps.fix_ai.outputs.ai_fix_replaced }}
           SUPER_FILE: ${{ steps.build_super.outputs.super_file }}
+          FAST_MODE: ${{ github.event.inputs.FAST_MODE }}
+          FAST_7Z_LEVEL: ${{ github.event.inputs.FAST_MODE == 'true' && '1' || '9' }}
+          FAST_7Z_DICTIONARY_SIZE: ${{ github.event.inputs.FAST_MODE == 'true' && '32m' || '256m' }}
         run: bash dump/scripts/ota_build_ci.sh repack
 
       - name: Set Upload Destination
