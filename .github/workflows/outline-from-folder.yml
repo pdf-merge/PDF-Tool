@@ -41,7 +41,7 @@ jobs:
       - name: 2. Configure Rclone
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONFIG_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "${{ secrets.RCLONE_CONFIG_BASE64_3 }}" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: 3. Download Files and Check Outline
         run: |
