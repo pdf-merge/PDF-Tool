@@ -12,7 +12,7 @@ jobs:
   add-outline:
     runs-on: ubuntu-latest
     env:
-      SOURCE_PATH: "gdrive:LSC_Books/ADD/${{ inputs.folder_name }}"
+      SOURCE_PATH: "1drive1:LSC_Books/ADD/${{ inputs.folder_name }}"
       DEST_PATH: "gdrive:LSC_Merged"
       
     steps:
