@@ -7,12 +7,22 @@ on:
         description: 'Folder prefix (e.g., 107)'
         required: true
         type: string
+      UPLOAD_REMOTE:
+        description: 'Rclone remote for source and upload'
+        required: false
+        type: choice
+        options:
+          - gdrive3
+          - gdrive1
+          - 1drive
+        default: 'gdrive3'
 
 jobs:
   merge-pdfs:
     runs-on: ubuntu-latest
     env:
-      RCLONE_DEST_PATH: "gdrive:LSC_Merged"
+      RCLONE_SOURCE_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Books"
+      RCLONE_DEST_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Merged"
     steps:
       - name: 1. Install Dependencies & OCRmyPDF from Source
         run: |
@@ -37,7 +47,7 @@ jobs:
       - name: 2. Configure Rclone
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONFIG_BASE64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          echo "${{ secrets.RCLONE_CONFIG_BASE64_3 }}" | base64 -d > ~/.config/rclone/rclone.conf
 
       - name: 3. Find and Download
         env:
@@ -45,15 +55,15 @@ jobs:
         run: |
           mkdir -p downloads
           echo "Searching for directory with prefix: $FOLDER_PREFIX"
-          TARGET_DIR_NAME=$(rclone lsf "gdrive:LSC_Books" --dirs-only | grep "^${FOLDER_PREFIX}_" | head -n 1 | sed 's/\/$//')
+          TARGET_DIR_NAME=$(rclone lsf "$RCLONE_SOURCE_PATH" --dirs-only | grep "^${FOLDER_PREFIX}_" | head -n 1 | sed 's/\/$//')
           
           if [ -z "$TARGET_DIR_NAME" ]; then
-            echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in gdrive:LSC_Books."
+            echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in $RCLONE_SOURCE_PATH."
             exit 1
           fi
           
           echo "Found target directory: $TARGET_DIR_NAME"
-          RCLONE_REMOTE_PATH="gdrive:LSC_Books/$TARGET_DIR_NAME"
+          RCLONE_REMOTE_PATH="$RCLONE_SOURCE_PATH/$TARGET_DIR_NAME"
           
           echo "Starting download from $RCLONE_REMOTE_PATH..."
           rclone copy "$RCLONE_REMOTE_PATH" ./downloads/ --include "*.pdf"

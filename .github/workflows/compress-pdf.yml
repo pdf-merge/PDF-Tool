@@ -4,9 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       file_name:
-        description: 'PDF file name inside gdrive:LSC_Merged (e.g. MyBook.pdf)'
+        description: 'PDF file name inside selected remote LSC_Merged (e.g. MyBook.pdf)'
         required: true
         type: string
+      UPLOAD_REMOTE:
+        description: 'Rclone remote for source and upload'
+        required: false
+        type: choice
+        options:
+          - gdrive3
+          - gdrive1
+          - 1drive
+        default: 'gdrive3'
       quality:
         description: 'Mức nén: Manh=file nhỏ nhất (96dpi) | TrungBinh=cân bằng (150dpi) | Vua=chất lượng cao (200dpi)'
         required: true
@@ -29,8 +38,8 @@ jobs:
   compress-pdf:
     runs-on: ubuntu-latest
     env:
-      SOURCE_PATH: "1drive1:LSC_Merged"
-      DEST_PATH: "1drive1:LSC_Merged/Compress"
+      SOURCE_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Merged"
+      DEST_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Merged/Compress"
 
     steps:
       - name: 1. Install Dependencies

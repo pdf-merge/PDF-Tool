@@ -23,6 +23,15 @@ on:
         options:
           - "yes"
           - "no"
+      UPLOAD_REMOTE:
+        description: "Rclone remote for upload"
+        required: false
+        default: "gdrive3"
+        type: choice
+        options:
+          - "gdrive3"
+          - "gdrive1"
+          - "1drive"
 
 env:
   TZ: Asia/Ho_Chi_Minh
@@ -36,6 +45,8 @@ jobs:
       TO_ID: ${{ github.event.inputs.TO_ID }}
       THREADS: ${{ github.event.inputs.THREADS }}
       PERFORM_OCR: ${{ github.event.inputs.PERFORM_OCR }}
+      UPLOAD_REMOTE: ${{ github.event.inputs.UPLOAD_REMOTE }}
+      RCLONE_REMOTE: ${{ github.event.inputs.UPLOAD_REMOTE }}
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
@@ -108,7 +119,7 @@ jobs:
 
       - name: Setup rclone (base64)
         env:
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone

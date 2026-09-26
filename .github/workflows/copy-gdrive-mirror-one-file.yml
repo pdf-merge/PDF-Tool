@@ -6,11 +6,11 @@ on:
       source_root:
         description: "Google Drive source folder"
         required: true
-        default: "gdrive2:Mirror"
+        default: "gdrive3:Mirror"
       destination_root:
         description: "OneDrive destination folder"
         required: true
-        default: "1drive:/Mirror"
+        default: "1drive:Mirror"
       file_path:
         description: "Relative file path to copy"
         required: true
@@ -49,21 +49,17 @@ jobs:
 
       - name: Restore rclone config
         env:
-          RCLONE_CONFIG_TEXT: ${{ secrets.RCLONE_CONFIG }}
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE642 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 }}
         run: |
           set -Eeuo pipefail
           install -m 700 -d "$HOME/.config/rclone"
 
-          if [[ -n "${RCLONE_CONFIG_BASE64}" ]]; then
-            printf '%s' "$RCLONE_CONFIG_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
-          elif [[ -n "${RCLONE_CONFIG_TEXT}" ]]; then
-            printf '%s\n' "$RCLONE_CONFIG_TEXT" > "$HOME/.config/rclone/rclone.conf"
-          else
-            echo "Missing GitHub secret: set RCLONE_CONFIG_BASE642 or RCLONE_CONFIG." >&2
+          if [[ -z "${RCLONE_CONFIG_BASE64}" ]]; then
+            echo "Missing GitHub secret: set RCLONE_CONFIG_BASE64_3." >&2
             exit 1
           fi
 
+          printf '%s' "$RCLONE_CONFIG_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
           chmod 600 "$HOME/.config/rclone/rclone.conf"
           rclone listremotes
 

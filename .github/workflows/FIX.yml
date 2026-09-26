@@ -44,11 +44,19 @@ on:
         required: true
         type: choice
         options:
-          - 1drive
-          - 1drive1
+          - gdrive3
           - gdrive1
-          - gdrive2
-        default: '1drive'
+          - 1drive
+        default: 'gdrive3'
+      SOURCE_REMOTE:
+        description: 'Select rclone remote for ROM stock source.'
+        required: false
+        type: choice
+        options:
+          - gdrive1
+          - gdrive3
+          - 1drive
+        default: 'gdrive1'
 
 env:
   TZ: Asia/Ho_Chi_Minh
@@ -129,7 +137,7 @@ jobs:
             )
 
             case "$source" in
-              1drive:*|1drive1:*)
+              1drive:*)
                 rclone_args+=(
                   --transfers=1
                   --checkers=4
@@ -225,15 +233,15 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 || secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONF_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 }}
         run: bash dump/scripts/ota_build_ci.sh configure-rclone
 
       - name: Get international base ROM
         id: get_rom
         env:
           FILE_PATH: ${{ github.event.inputs.file_path }}
-          ONEDRIVE_MIRROR_REMOTE: ${{ vars.ONEDRIVE_MIRROR_REMOTE || '1drive1:Mirror' }}
-          GDRIVE_STOCK_REMOTE: ${{ vars.GDRIVE_STOCK_REMOTE || 'gdrive1:VS_Stock' }}
+          ONEDRIVE_MIRROR_REMOTE: 1drive:Mirror
+          GDRIVE_STOCK_REMOTE: ${{ inputs.SOURCE_REMOTE }}:VS_Stock
         run: bash dump/scripts/ota_build_ci.sh get-base-rom
 
       - name: Get original donor ROM
@@ -241,8 +249,8 @@ jobs:
         id: get_file_2
         env:
           FILE_PATH_2: ${{ github.event.inputs.source_file_2_path }}
-          ONEDRIVE_MIRROR_REMOTE: ${{ vars.ONEDRIVE_MIRROR_REMOTE || '1drive1:Mirror' }}
-          GDRIVE_STOCK_REMOTE: ${{ vars.GDRIVE_STOCK_REMOTE || 'gdrive1:VS_Stock' }}
+          ONEDRIVE_MIRROR_REMOTE: 1drive:Mirror
+          GDRIVE_STOCK_REMOTE: ${{ inputs.SOURCE_REMOTE }}:VS_Stock
         run: bash dump/scripts/ota_build_ci.sh get-donor-rom
 
       - name: Extract payload info
@@ -289,14 +297,14 @@ jobs:
         id: fix_ai
         env:
           VERSION: ${{ steps.payload_info.outputs.version }}
-          AI_FIX_REMOTE_DIR: 1drive1:Mirror/Oxygen/FileFix/AI
+          AI_FIX_REMOTE_DIR: 1drive:Mirror/Oxygen/FileFix/AI
         run: bash dump/scripts/ota_build_ci.sh apply-ai-fix
 
       - name: Apply LK fix
         id: fix_lk
         env:
           DEVICE_CODE: ${{ steps.payload_info.outputs.device_code }}
-          LK_FIX_REMOTE_DIR: 1drive1:Mirror/Oxygen/FileFix/LK
+          LK_FIX_REMOTE_DIR: 1drive:Mirror/Oxygen/FileFix/LK
         run: |
           set -euo pipefail
           lk_fix_file="$(python3 - "$DEVICE_CODE" <<'PY'
@@ -314,10 +322,10 @@ jobs:
             echo "Checking LK fix file: ${LK_FIX_REMOTE_DIR}/${lk_fix_file}"
             rclone listremotes
             if ! rclone lsf "${LK_FIX_REMOTE_DIR}" --files-only --include "$lk_fix_file" | grep -qx "$lk_fix_file"; then
-              echo "LK file not found at default path; searching 1drive1"
-              found_lk="$(rclone lsf --recursive --files-only "1drive1:" --include "$lk_fix_file" | grep -m1 "/${lk_fix_file}$" || true)"
+              echo "LK file not found at default path; searching 1drive"
+              found_lk="$(rclone lsf --recursive --files-only "1drive:" --include "$lk_fix_file" | grep -m1 "/${lk_fix_file}$" || true)"
               if [ -n "$found_lk" ]; then
-                LK_FIX_REMOTE_DIR="1drive1:${found_lk%/*}"
+                LK_FIX_REMOTE_DIR="1drive:${found_lk%/*}"
                 export LK_FIX_REMOTE_DIR
                 echo "Using discovered LK folder"
               fi
@@ -368,7 +376,7 @@ jobs:
           ARCHIVE_FILE: ${{ steps.repack.outputs.output_file }}
         run: |
           case "$UPLOAD_REMOTE" in
-            1drive|1drive1|gdrive1|gdrive2)
+            1drive|gdrive1|gdrive3)
               RCLONE_DEST="${UPLOAD_REMOTE}:Mirror/Oxygen"
               ;;
             *)
@@ -450,14 +458,14 @@ jobs:
             --retries-sleep=20s
           )
           case "$UPLOAD_REMOTE" in
-            1drive|1drive1)
+            1drive)
               RCLONE_ARGS+=(
                 --transfers=1
                 --checkers=4
                 --onedrive-chunk-size=10M
               )
               ;;
-            gdrive1|gdrive2)
+            gdrive1|gdrive3)
               RCLONE_ARGS+=(
                 --transfers=4
                 --checkers=8
@@ -471,7 +479,7 @@ jobs:
 
           RCLONE_DIR_ARGS=("${RCLONE_ARGS[@]}")
           case "$UPLOAD_REMOTE" in
-            1drive|1drive1)
+            1drive)
               RCLONE_DIR_ARGS=(
                 --transfers=2
                 --checkers=4
@@ -485,7 +493,7 @@ jobs:
                 --retries-sleep=20s
               )
               ;;
-            gdrive1|gdrive2)
+            gdrive1|gdrive3)
               RCLONE_DIR_ARGS=(
                 --transfers=8
                 --checkers=16

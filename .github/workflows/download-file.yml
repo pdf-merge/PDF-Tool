@@ -17,12 +17,10 @@ on:
         required: false
         type: choice
         options:
-          - 1drive
-          - 1drive1
-          - gdrive
+          - gdrive3
           - gdrive1
-          - gdrive2
-        default: 'gdrive1'
+          - 1drive
+        default: 'gdrive3'
       UPLOAD_PATH:
         description: 'Folder path in selected remote'
         required: false
@@ -66,12 +64,12 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 || secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 }}
         run: |
           set -euo pipefail
           mkdir -p ~/.config/rclone
           if [ -z "${RCLONE_CONFIG_BASE64:-}" ]; then
-            echo "::error::RCLONE_CONFIG_BASE64 secret is empty"
+            echo "::error::RCLONE_CONFIG_BASE64_3 secret is empty"
             exit 1
           fi
           echo "$RCLONE_CONFIG_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
@@ -100,13 +98,13 @@ jobs:
             UPLOAD_PATH="$LEGACY_GDRIVE_PATH"
           fi
 
-          UPLOAD_REMOTE="${UPLOAD_REMOTE:-gdrive1}"
+          UPLOAD_REMOTE="${UPLOAD_REMOTE:-gdrive3}"
           UPLOAD_PATH="${UPLOAD_PATH:-Mirror}"
           UPLOAD_PATH="${UPLOAD_PATH#/}"
           UPLOAD_PATH="${UPLOAD_PATH%/}"
 
           case "$UPLOAD_REMOTE" in
-            1drive|1drive1|gdrive|gdrive1|gdrive2)
+            1drive|gdrive1|gdrive3)
               ;;
             *)
               echo "::error::Unknown upload remote: $UPLOAD_REMOTE"
@@ -249,7 +247,7 @@ jobs:
             --retries-sleep=20s
           )
           case "$REMOTE_DIR" in
-            1drive:*|1drive1:*)
+            1drive:*)
               RCLONE_ARGS+=(
                 --transfers=1
                 --checkers=4

@@ -3,12 +3,30 @@ name: test-rclone
 on:
   workflow_dispatch:
     inputs:
+      source_remote:
+        description: 'Source rclone remote'
+        required: true
+        type: choice
+        options:
+          - gdrive1
+          - gdrive3
+          - 1drive
+        default: 'gdrive1'
       source_path:
-        description: 'Source GDrive Path (gdrive:)'
+        description: 'Source path in selected remote'
         required: true
         default: 'VS_Stock/'
+      destination_remote:
+        description: 'Destination rclone remote'
+        required: true
+        type: choice
+        options:
+          - gdrive3
+          - gdrive1
+          - 1drive
+        default: 'gdrive3'
       destination_path:
-        description: 'Destination Google Drive Path (gdrive:)'
+        description: 'Destination path in selected remote'
         required: true
         default: 'Mirror'
 
@@ -23,17 +41,20 @@ jobs:
 
       - name: Configure rclone
         env:
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 }}
         run: |
           mkdir -p ~/.config/rclone
           echo $RCLONE_CONFIG_BASE64 | base64 --decode > ~/.config/rclone/rclone.conf
           
         
       - name: Run Rclone Sync
+        env:
+          SOURCE_REMOTE: ${{ inputs.source_remote }}
+          DESTINATION_REMOTE: ${{ inputs.destination_remote }}
         run: |
           set -o pipefail
-          echo "Starting rclone copy from gdrive:${{ github.event.inputs.source_path }} to gdrive:${{ github.event.inputs.destination_path }}"
-          rclone copy "gdrive:${{ github.event.inputs.source_path }}" "gdrive:${{ github.event.inputs.destination_path }}" \
+          echo "Starting rclone copy from ${SOURCE_REMOTE}:${{ github.event.inputs.source_path }} to ${DESTINATION_REMOTE}:${{ github.event.inputs.destination_path }}"
+          rclone copy "${SOURCE_REMOTE}:${{ github.event.inputs.source_path }}" "${DESTINATION_REMOTE}:${{ github.event.inputs.destination_path }}" \
             --drive-server-side-across-configs=true \
             --transfers 32 \
             --checkers 32 \
@@ -52,6 +73,6 @@ jobs:
           message: |
             *Rclone Job Finished*
             Status: `${{ job.status }}`
-            Source: `gdrive:${{ github.event.inputs.source_path }}`
-            Destination: `gdrive:${{ github.event.inputs.destination_path }}`
+            Source: `${{ inputs.source_remote }}:${{ github.event.inputs.source_path }}`
+            Destination: `${{ inputs.destination_remote }}:${{ github.event.inputs.destination_path }}`
             

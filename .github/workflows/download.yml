@@ -18,6 +18,15 @@ on:
         options:
           - "yes"
           - "no"
+      UPLOAD_REMOTE:
+        description: "Rclone remote for upload"
+        required: false
+        default: "gdrive3"
+        type: choice
+        options:
+          - "gdrive3"
+          - "gdrive1"
+          - "1drive"
 env:
   TZ: Asia/Ho_Chi_Minh
 
@@ -92,7 +101,7 @@ jobs:
 
       - name: Setup rclone (base64)
         env:
-          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64_3 }}
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
@@ -105,10 +114,12 @@ jobs:
 
       - name: Set Main Upload Destination (for exist-check)
         id: set_destination
+        env:
+          UPLOAD_REMOTE: ${{ inputs.UPLOAD_REMOTE }}
         run: |
           # This path is used by the Python script to check if a book exists
-          echo "RCLONE_DEST_PATH=gdrive:/LSC_Books" >> $GITHUB_ENV
-          echo "Main check destination set to: gdrive:/LSC_Books"
+          echo "RCLONE_DEST_PATH=${UPLOAD_REMOTE}:LSC_Books" >> $GITHUB_ENV
+          echo "Main check destination set to: ${UPLOAD_REMOTE}:LSC_Books"
 
       - name: Run Intelligent Download Script
         id: download_script
@@ -166,7 +177,7 @@ jobs:
         id: upload_no_ocr
         if: steps.metadata_pass_1.conclusion == 'success'
         env:
-          RCLONE_DEST_PATH: "gdrive:/LSC_Books/No_OCR"
+          RCLONE_DEST_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Books/No_OCR"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"
@@ -238,7 +249,7 @@ jobs:
         id: upload_ocr
         if: steps.metadata_pass_2.conclusion == 'success' && env.PERFORM_OCR == 'yes'
         env:
-          RCLONE_DEST_PATH: "gdrive:/LSC_Books"
+          RCLONE_DEST_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Books"
         run: |
           FOLDER_NAME="${{ steps.sanitize.outputs.sanitized_name }}"
           TARGET="${{ env.RCLONE_DEST_PATH }}/${FOLDER_NAME}"

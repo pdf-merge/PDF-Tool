@@ -4,16 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       folder_name:
-        description: 'Folder name inside gdrive:LSC_Books/ADD/'
+        description: 'Folder name inside selected remote LSC_Books/ADD/'
         required: true
         type: string
+      UPLOAD_REMOTE:
+        description: 'Rclone remote for source and upload'
+        required: false
+        type: choice
+        options:
+          - gdrive3
+          - gdrive1
+          - 1drive
+        default: 'gdrive3'
 
 jobs:
   add-outline:
     runs-on: ubuntu-latest
     env:
-      SOURCE_PATH: "1drive1:LSC_Books/ADD/${{ inputs.folder_name }}"
-      DEST_PATH: "1drive1:LSC_Merged"
+      SOURCE_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Books/ADD/${{ inputs.folder_name }}"
+      DEST_PATH: "${{ inputs.UPLOAD_REMOTE }}:LSC_Merged"
       
     steps:
       - name: 1. Install Dependencies & OCRmyPDF from Source
