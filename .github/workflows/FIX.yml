@@ -97,8 +97,8 @@ jobs:
           x9p["lk_fix_file"] = "x9p.img"
           x9p["variant_labels"] = {
               "NONE": "1Sim_OTA",
-              "MCF_OTA": "2SIM_NoOTA",
-              "MCF_OTA,MODEM": "2SIM_mo_NoOTA",
+              "MCF_OTA": "2SIM_OTA",
+              "MCF_OTA,MODEM": "2SIM_NoOTA",
           }
 
           required_lk = {
