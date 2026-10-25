@@ -72,7 +72,7 @@ jobs:
           echo "target_dir_name=$TARGET_DIR_NAME" >> "$GITHUB_OUTPUT"
           echo "final_file_name=${CLEAN_DIR_NAME}.pdf" >> "$GITHUB_OUTPUT"
 
-      - name: Force OCR each PDF (replace existing text layer)
+      - name: Refresh OCR and compress each PDF
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +86,8 @@ jobs:
 
             ocrmypdf \
               --language vie+eng \
-              --force-ocr \
+              --redo-ocr \
+              --optimize 1 \
               --output-type pdf \
               "$input_file" \
               "$output_file"
