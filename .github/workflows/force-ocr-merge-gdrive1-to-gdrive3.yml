@@ -50,7 +50,7 @@ jobs:
           mkdir -p downloads/input
 
           echo "Searching for directory with prefix: $FOLDER_PREFIX"
-          TARGET_DIR_NAME="$(rclone lsf "$RCLONE_SOURCE_PATH" --dirs-only | awk -v prefix="${FOLDER_PREFIX}_" 'index($0, prefix) == 1 { sub(/\/$/, ""); print; exit }')"
+          TARGET_DIR_NAME="$(rclone lsf "$RCLONE_SOURCE_PATH" --dirs-only | awk -v prefix="${FOLDER_PREFIX}_" 'index($0, prefix) == 1 && !found { sub(/\/$/, ""); print; found = 1 }')"
 
           if [[ -z "$TARGET_DIR_NAME" ]]; then
             echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in $RCLONE_SOURCE_PATH."
