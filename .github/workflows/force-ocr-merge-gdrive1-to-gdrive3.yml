@@ -72,7 +72,7 @@ jobs:
           echo "target_dir_name=$TARGET_DIR_NAME" >> "$GITHUB_OUTPUT"
           echo "final_file_name=${CLEAN_DIR_NAME}.pdf" >> "$GITHUB_OUTPUT"
 
-      - name: Refresh OCR and compress each PDF
+      - name: Force OCR each PDF (replace existing text layer)
         shell: bash
         run: |
           set -euo pipefail
@@ -86,13 +86,41 @@ jobs:
 
             ocrmypdf \
               --language vie+eng \
-              --redo-ocr \
-              --optimize 1 \
+              --force-ocr \
               --output-type pdf \
               "$input_file" \
               "$output_file"
 
             mv "$output_file" "$input_file"
+          done
+
+      - name: Compress OCR PDFs
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pdf_files=(downloads/input/*.pdf)
+
+          for input_file in "${pdf_files[@]}"; do
+            compressed_file="${input_file%.pdf}.compressed.pdf"
+            echo "Compressing: ${input_file##*/}"
+
+            gs \
+              -sDEVICE=pdfwrite \
+              -dCompatibilityLevel=1.4 \
+              -dPDFSETTINGS=/ebook \
+              -dNOPAUSE \
+              -dQUIET \
+              -dBATCH \
+              -sOutputFile="$compressed_file" \
+              "$input_file"
+
+            if [[ -s "$compressed_file" ]] && (( $(stat -c%s "$compressed_file") < $(stat -c%s "$input_file") )); then
+              mv "$compressed_file" "$input_file"
+            else
+              echo "Compression did not reduce file size; keeping OCR output."
+              rm -f "$compressed_file"
+            fi
           done
 
       - name: Merge PDFs and create nested bookmarks
