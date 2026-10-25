@@ -15,7 +15,7 @@ on:
           - gdrive3
           - gdrive1
           - 1drive
-        default: 'gdrive3'
+        default: 'gdrive1'
 
 jobs:
   merge-pdfs:
