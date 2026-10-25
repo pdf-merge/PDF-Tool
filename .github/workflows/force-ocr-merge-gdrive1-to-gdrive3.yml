@@ -1,0 +1,192 @@
+name: Force OCR & Merge PDF (gdrive1 to gdrive3)
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder_prefix:
+        description: 'Prefix of the source folder under gdrive1:LSC_Books (e.g., 10002)'
+        required: true
+        type: string
+
+jobs:
+  force-ocr-merge:
+    runs-on: ubuntu-latest
+    env:
+      RCLONE_SOURCE_PATH: gdrive1:LSC_Books
+      RCLONE_DEST_PATH: gdrive3:LSC_Merged
+
+    steps:
+      - name: Install dependencies and OCRmyPDF
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            git rclone pdftk-java exiftool \
+            python3-pip python3-dev \
+            ghostscript qpdf \
+            tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng \
+            libopenjp2-7 libffi-dev libssl-dev \
+            libjpeg-dev zlib1g-dev libfreetype6-dev
+
+          git clone --depth 1 https://github.com/ocrmypdf/OCRmyPDF.git
+          python3 -m pip install --break-system-packages ./OCRmyPDF
+
+      - name: Configure rclone
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/rclone"
+          echo "${{ secrets.RCLONE_CONFIG_BASE64_3 }}" | base64 --decode > "$HOME/.config/rclone/rclone.conf"
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
+
+      - name: Find and download source PDFs
+        id: source
+        shell: bash
+        env:
+          FOLDER_PREFIX: ${{ inputs.folder_prefix }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloads/input
+
+          echo "Searching for directory with prefix: $FOLDER_PREFIX"
+          TARGET_DIR_NAME="$(rclone lsf "$RCLONE_SOURCE_PATH" --dirs-only | awk -v prefix="${FOLDER_PREFIX}_" 'index($0, prefix) == 1 { sub(/\/$/, ""); print; exit }')"
+
+          if [[ -z "$TARGET_DIR_NAME" ]]; then
+            echo "::error::No directory found starting with '${FOLDER_PREFIX}_' in $RCLONE_SOURCE_PATH."
+            exit 1
+          fi
+
+          echo "Found source directory: $TARGET_DIR_NAME"
+          RCLONE_REMOTE_PATH="$RCLONE_SOURCE_PATH/$TARGET_DIR_NAME"
+          rclone copy "$RCLONE_REMOTE_PATH" downloads/input/ --include "*.pdf"
+
+          shopt -s nullglob
+          pdf_files=(downloads/input/*.pdf)
+          if (( ${#pdf_files[@]} == 0 )); then
+            echo "::error::No PDF files found in $RCLONE_REMOTE_PATH."
+            exit 1
+          fi
+
+          CLEAN_DIR_NAME="${TARGET_DIR_NAME// /_}"
+          echo "target_dir_name=$TARGET_DIR_NAME" >> "$GITHUB_OUTPUT"
+          echo "final_file_name=${CLEAN_DIR_NAME}.pdf" >> "$GITHUB_OUTPUT"
+
+      - name: Force OCR each PDF (replace existing text layer)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pdf_files=(downloads/input/*.pdf)
+
+          for input_file in "${pdf_files[@]}"; do
+            filename="${input_file##*/}"
+            output_file="downloads/input/ocr_${filename}"
+            echo "Force OCR: $filename"
+
+            ocrmypdf \
+              --language vie+eng \
+              --force-ocr \
+              --output-type pdf \
+              "$input_file" \
+              "$output_file"
+
+            mv "$output_file" "$input_file"
+          done
+
+      - name: Merge PDFs and create nested bookmarks
+        shell: bash
+        env:
+          FINAL_FILE_NAME: ${{ steps.source.outputs.final_file_name }}
+        run: |
+          set -euo pipefail
+          cd downloads/input
+          shopt -s nullglob
+          pdf_files=( *.pdf )
+          bookmark_file="bookmarks.txt"
+          merged_temp_file="../merged_temp.pdf"
+          final_file="$FINAL_FILE_NAME"
+          rm -f "$bookmark_file" "$merged_temp_file" "../$final_file"
+
+          page_count=1
+          for file in "${pdf_files[@]}"; do
+            title="${file%.pdf}"
+            title="$(printf '%s' "$title" | sed 's/^[0-9]*_//')"
+
+            {
+              echo "BookmarkBegin"
+              echo "BookmarkTitle: $title"
+              echo "BookmarkLevel: 1"
+              echo "BookmarkPageNumber: $page_count"
+            } >> "$bookmark_file"
+
+            offset=$((page_count - 1))
+            pdftk "$file" dump_data | \
+              grep -E '^(BookmarkBegin|BookmarkTitle|BookmarkLevel|BookmarkPageNumber)' | \
+              awk -v offset="$offset" '
+                /^BookmarkLevel:/ { print "BookmarkLevel: " ($2 + 1); next }
+                /^BookmarkPageNumber:/ { print "BookmarkPageNumber: " ($2 + offset); next }
+                { print }
+              ' >> "$bookmark_file" || true
+
+            current_pages="$(pdftk "$file" dump_data | awk '/^NumberOfPages:/ {print $2; exit}')"
+            if [[ ! "$current_pages" =~ ^[0-9]+$ ]]; then
+              echo "::error::Could not read page count for $file"
+              exit 1
+            fi
+            page_count=$((page_count + current_pages))
+          done
+
+          pdftk "${pdf_files[@]}" cat output "$merged_temp_file"
+          pdftk "$merged_temp_file" update_info "$bookmark_file" output "../$final_file"
+          rm -f "$merged_temp_file" "$bookmark_file"
+          echo "Created $final_file"
+
+      - name: Set PDF metadata
+        shell: bash
+        env:
+          FINAL_FILE_NAME: ${{ steps.source.outputs.final_file_name }}
+        run: |
+          set -euo pipefail
+          cd downloads
+          exiftool \
+            -Title="LSC" \
+            -Author="LSC" \
+            -Subject="LSC" \
+            -Creator="LSC" \
+            -Producer="LSC" \
+            -overwrite_original "$FINAL_FILE_NAME"
+
+          TZ=Asia/Ho_Chi_Minh exiftool -AllDates=now -overwrite_original "$FINAL_FILE_NAME"
+
+      - name: Upload merged PDF to gdrive3
+        shell: bash
+        env:
+          FINAL_FILE_NAME: ${{ steps.source.outputs.final_file_name }}
+        run: |
+          set -euo pipefail
+          rclone copy "downloads/$FINAL_FILE_NAME" "$RCLONE_DEST_PATH"
+          echo "Uploaded to $RCLONE_DEST_PATH/$FINAL_FILE_NAME"
+
+      - name: Create result artifact
+        shell: bash
+        env:
+          TARGET_DIR_NAME: ${{ steps.source.outputs.target_dir_name }}
+          FINAL_FILE_NAME: ${{ steps.source.outputs.final_file_name }}
+          FOLDER_PREFIX: ${{ inputs.folder_prefix }}
+        run: |
+          set -euo pipefail
+          link="$(rclone link "$RCLONE_DEST_PATH/$FINAL_FILE_NAME")"
+          book_name="${TARGET_DIR_NAME#${FOLDER_PREFIX}_}"
+          book_name="${book_name//_/ }"
+          {
+            echo "✅ OCR ép lại & gộp PDF thành công"
+            echo "📚 Sách: $book_name"
+            echo "🔗 Link tải: $link"
+          } > downloads/result.txt
+
+      - name: Upload result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: force-ocr-merge-result
+          path: downloads/result.txt
