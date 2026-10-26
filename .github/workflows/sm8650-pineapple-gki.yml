@@ -1,0 +1,76 @@
+name: SM8650 Pineapple GKI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/sm8650-pineapple-gki.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sm8650-pineapple-gki-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      OPAIRSHARE_SM8650_BUILD_ROOT: /mnt/opairshare-sm8650
+      OPAIRSHARE_TOOLS_DIR: ${{ github.workspace }}/OPAirDrop/tools/kernel
+      KLEAF_MAKE_JOBS: 2
+
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        with:
+          build-mount-path: /mnt/opairshare-sm8650
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout OPAirDrop source
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/OPAirDrop'
+          token: ${{ secrets.ACTION_TOKEN }}
+          path: OPairDrop
+
+      - name: Show runner resources
+        run: |
+          df -h
+          free -h
+
+      - name: Sync official OnePlus SM8650 source
+        working-directory: OPairDrop
+        run: bash tools/kernel/sm8650-sync-source.sh
+
+      - name: Build Pineapple GKI baseline
+        working-directory: OPairDrop
+        run: bash tools/kernel/sm8650-build-baseline.sh
+
+      - name: Package kernel distribution
+        if: success()
+        run: |
+          set -euo pipefail
+          DIST="$OPAIRSHARE_SM8650_BUILD_ROOT/opairshare/kernel_platform/out/msm-kernel-pineapple-gki/dist"
+          test -s "$DIST/Image"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          tar -C "$DIST" -czf "$GITHUB_WORKSPACE/artifacts/pineapple-gki-dist.tar.gz" .
+          cp "$OPAIRSHARE_SM8650_BUILD_ROOT/logs/source-lock.xml" "$GITHUB_WORKSPACE/artifacts/"
+          sha256sum "$GITHUB_WORKSPACE/artifacts"/* > "$GITHUB_WORKSPACE/artifacts/SHA256SUMS"
+
+      - name: Upload Pineapple GKI artifact
+        if: always() && hashFiles('artifacts/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sm8650-pineapple-gki-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
