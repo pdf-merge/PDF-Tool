@@ -2,12 +2,18 @@ name: SM8650 WLAN fast
 
 on:
   workflow_dispatch:
+    inputs:
+      overlay:
+        description: 'Apply the Ace 5 port scaffold (feature OFF)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: sm8650-wlan-fast-${{ github.ref }}
+  group: sm8650-wlan-fast-${{ github.ref }}-${{ inputs.overlay }}
   cancel-in-progress: false
 
 jobs:
@@ -48,6 +54,19 @@ jobs:
         working-directory: OPairDrop
         run: bash tools/kernel/sm8650-sync-source.sh
 
+      - name: Checkout Ace5-Airdrop port scaffold
+        if: ${{ inputs.overlay }}
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/Ace5-Airdrop'
+          token: ${{ secrets.ACTION_TOKEN }}
+          path: Ace5-Airdrop
+
+      - name: Apply Ace 5 port scaffold (feature OFF)
+        if: ${{ inputs.overlay }}
+        working-directory: Ace5-Airdrop
+        run: bash port/apply.sh "$OPAIRSHARE_SM8650_BUILD_ROOT/opairshare" --force
+
       # Build only the WLAN target. The DDK target pulls the kernel build it
       # needs, but skips the full kernel-dist/vendor-module packaging step.
       - name: Build WLAN baseline (kiwi-v2, no full kernel dist)
@@ -78,6 +97,18 @@ jobs:
           cp "$WLAN" "$GITHUB_WORKSPACE/artifacts/qca_cld3_kiwi_v2.ko"
           (cd "$GITHUB_WORKSPACE/artifacts" && \
             sha256sum qca_cld3_kiwi_v2.ko wlan-modinfo.txt > SHA256SUMS)
+
+      - name: Compare imported-symbol ABI with stock qca
+        if: ${{ inputs.overlay }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          STOCK="$GITHUB_WORKSPACE/Ace5-Airdrop/qca_cld3_kiwi_v2.kodir"
+          test -s "$STOCK"
+          head -c 19226288 "$STOCK" > /tmp/stock-qca.ko
+          diff <(modprobe --dump-modversions /tmp/stock-qca.ko) \
+               <(modprobe --dump-modversions "$GITHUB_WORKSPACE/artifacts/qca_cld3_kiwi_v2.ko")
+          echo "ABI_OK: imported symbols/CRCs match stock qca"
 
       - name: Upload WLAN artifact
         if: always() && hashFiles('artifacts/*') != ''
