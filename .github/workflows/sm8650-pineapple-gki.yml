@@ -42,11 +42,6 @@ jobs:
           token: ${{ secrets.ACTION_TOKEN }}
           path: OPairDrop
 
-      - name: Pin OPAirDrop tooling to Ace 5 16.0 baseline
-        run: |
-          install -D -m 0755 .github/workflows/scripts/sm8650-sync-source.sh OPairDrop/tools/kernel/sm8650-sync-source.sh
-          install -D -m 0755 .github/workflows/scripts/sm8650-build-baseline.sh OPairDrop/tools/kernel/sm8650-build-baseline.sh
-
       - name: Show runner resources
         run: |
           df -h
