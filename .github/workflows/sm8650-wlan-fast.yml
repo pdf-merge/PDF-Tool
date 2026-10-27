@@ -18,6 +18,7 @@ jobs:
       OPAIRSHARE_SM8650_BUILD_ROOT: /mnt/opairshare-sm8650
       OPAIRSHARE_SM8650_SOURCE_BRANCH: oneplus/sm8650_b_16.0.0_ace_5
       WLAN_JOBS: 4
+      WLAN_VERMAGIC: 6.1.141-android14-11-o-g5de16d278e6c
 
     steps:
       - name: Maximize Build Space
