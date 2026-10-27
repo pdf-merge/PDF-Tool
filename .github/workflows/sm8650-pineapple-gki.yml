@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 360
     env:
       OPAIRSHARE_SM8650_BUILD_ROOT: /mnt/opairshare-sm8650
-      OPAIRSHARE_TOOLS_DIR: ${{ github.workspace }}/OPAirDrop/tools/kernel
+      OPAIRSHARE_SM8650_SOURCE_BRANCH: oneplus/sm8650_b_16.0.0_ace_5
       KLEAF_MAKE_JOBS: 2
 
     steps:
@@ -38,8 +38,8 @@ jobs:
       - name: Checkout OPAirDrop source
         uses: actions/checkout@v4
         with:
-          repository: 'proplayer1131/OPAirDrop'
-          token: ${{ secrets.ACTION_TOKEN }}
+          repository: 'Weverses/OPAirDrop'
+          ref: main
           path: OPairDrop
 
       - name: Show runner resources
