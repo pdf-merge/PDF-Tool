@@ -1,0 +1,88 @@
+name: SM8650 WLAN fast
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sm8650-wlan-fast-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      OPAIRSHARE_SM8650_BUILD_ROOT: /mnt/opairshare-sm8650
+      OPAIRSHARE_SM8650_SOURCE_BRANCH: oneplus/sm8650_b_16.0.0_ace_5
+      WLAN_JOBS: 4
+
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        with:
+          build-mount-path: /mnt/opairshare-sm8650
+          root-reserve-mb: 512
+          swap-size-mb: 4096
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+
+      - name: Checkout OPAirDrop source
+        uses: actions/checkout@v4
+        with:
+          repository: 'proplayer1131/OPAirDrop'
+          token: ${{ secrets.ACTION_TOKEN }}
+          path: OPairDrop
+
+      - name: Show runner resources
+        run: |
+          df -h
+          free -h
+          nproc
+
+      - name: Sync official OnePlus SM8650 source
+        working-directory: OPairDrop
+        run: bash tools/kernel/sm8650-sync-source.sh
+
+      # Build only the WLAN target. The DDK target pulls the kernel build it
+      # needs, but skips the full kernel-dist/vendor-module packaging step.
+      - name: Build WLAN baseline (kiwi-v2, no full kernel dist)
+        working-directory: OPairDrop
+        run: bash tools/kernel/sm8650-build-wlan.sh
+
+      - name: Verify WLAN baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          WLAN="$OPAIRSHARE_SM8650_BUILD_ROOT/baseline-wlan/qca_cld3_kiwi_v2.ko"
+          test -s "$WLAN" || {
+            echo "::error::qca_cld3_kiwi_v2.ko was not produced"
+            exit 1
+          }
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          if command -v modinfo >/dev/null 2>&1; then
+            modinfo "$WLAN" | tee "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt"
+          else
+            strings "$WLAN" | grep -E '^(name|vermagic|depends|srcversion)=' \
+              | tee "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt"
+          fi
+          grep -Eq 'vermagic[=:][[:space:]]*6\.1\.141-android14-11-o' \
+            "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt" || {
+              echo "::error::unexpected WLAN vermagic"
+              exit 1
+            }
+          cp "$WLAN" "$GITHUB_WORKSPACE/artifacts/qca_cld3_kiwi_v2.ko"
+          (cd "$GITHUB_WORKSPACE/artifacts" && \
+            sha256sum qca_cld3_kiwi_v2.ko wlan-modinfo.txt > SHA256SUMS)
+
+      - name: Upload WLAN artifact
+        if: always() && hashFiles('artifacts/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sm8650-wlan-fast-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
