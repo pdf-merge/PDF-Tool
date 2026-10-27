@@ -55,16 +55,58 @@ jobs:
         working-directory: OPairDrop
         run: bash tools/kernel/sm8650-build-baseline.sh
 
+      # The baseline build above does not produce the Qualcomm WLAN/CNSS stack.
+      # Build qca_cld3_kiwi_v2.ko explicitly, then fail if it is absent.
+      - name: Build Pineapple WLAN baseline (kiwi-v2)
+        working-directory: OPairDrop
+        run: bash tools/kernel/sm8650-build-wlan.sh
+
+      - name: Verify WLAN baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          WLAN="$OPAIRSHARE_SM8650_BUILD_ROOT/baseline-wlan/qca_cld3_kiwi_v2.ko"
+          test -s "$WLAN" || {
+            echo "::error::qca_cld3_kiwi_v2.ko was not produced"
+            exit 1
+          }
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          if command -v modinfo >/dev/null 2>&1; then
+            modinfo "$WLAN" | tee "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt"
+          else
+            strings "$WLAN" | grep -E '^(name|vermagic|depends|srcversion)=' \
+              | tee "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt"
+          fi
+          grep -Eq 'vermagic[=:][[:space:]]*6\.1\.141-android14-11-o' \
+            "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt" || {
+              echo "::error::unexpected WLAN vermagic"
+              exit 1
+            }
+          sha256sum "$WLAN" > "$GITHUB_WORKSPACE/artifacts/wlan-sha256.txt"
+
       - name: Package kernel distribution
         if: success()
+        shell: bash
         run: |
           set -euo pipefail
           DIST="$OPAIRSHARE_SM8650_BUILD_ROOT/opairshare/kernel_platform/out/msm-kernel-pineapple-gki/dist"
+          WLAN="$OPAIRSHARE_SM8650_BUILD_ROOT/baseline-wlan/qca_cld3_kiwi_v2.ko"
           test -s "$DIST/Image"
+          test -s "$WLAN" || {
+            echo "::error::WLAN module missing; refusing to publish a kernel-only baseline"
+            exit 1
+          }
+          # Keep the module next to the kernel dist so the tarball carries both.
+          cp "$WLAN" "$DIST/qca_cld3_kiwi_v2.ko"
+          test -s "$DIST/qca_cld3_kiwi_v2.ko"
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           tar -C "$DIST" -czf "$GITHUB_WORKSPACE/artifacts/pineapple-gki-dist.tar.gz" .
+          tar -tzf "$GITHUB_WORKSPACE/artifacts/pineapple-gki-dist.tar.gz" \
+            | grep -q 'qca_cld3_kiwi_v2\.ko'
           cp "$OPAIRSHARE_SM8650_BUILD_ROOT/logs/source-lock.xml" "$GITHUB_WORKSPACE/artifacts/"
-          sha256sum "$GITHUB_WORKSPACE/artifacts"/* > "$GITHUB_WORKSPACE/artifacts/SHA256SUMS"
+          cp "$DIST/Module.symvers" "$GITHUB_WORKSPACE/artifacts/kernel-Module.symvers"
+          (cd "$GITHUB_WORKSPACE/artifacts" && \
+            sha256sum * | grep -v ' SHA256SUMS$' > SHA256SUMS)
 
       - name: Upload Pineapple GKI artifact
         if: always() && hashFiles('artifacts/*') != ''
@@ -72,5 +114,40 @@ jobs:
         with:
           name: sm8650-pineapple-gki-${{ github.run_number }}
           path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Optional compile smoke test for the AWDL port scaffold. It runs after
+      # the stock artifact is uploaded, does not block the baseline, and is
+      # skipped until port/ is copied to tools/kernel/ace5-port/.
+      - name: Apply port scaffold and build WLAN feature-OFF
+        id: overlay
+        if: success() && hashFiles('OPairDrop/tools/kernel/ace5-port/apply.sh') != ''
+        continue-on-error: true
+        shell: bash
+        working-directory: OPairDrop
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/overlays"
+          bash tools/kernel/sm8650-build-wlan-overlay.sh 2>&1 \
+            | tee "$GITHUB_WORKSPACE/overlay-build.log"
+          WLAN="$OPAIRSHARE_SM8650_BUILD_ROOT/overlay-wlan-feature-off/qca_cld3_kiwi_v2.ko"
+          cp "$WLAN" "$GITHUB_WORKSPACE/overlays/"
+          (modinfo "$WLAN" 2>/dev/null || strings "$WLAN" | grep -E '^(name|vermagic|depends|srcversion)=') \
+            > "$GITHUB_WORKSPACE/overlays/overlay-modinfo.txt"
+
+      - name: Note skipped overlay build
+        if: success() && hashFiles('OPairDrop/tools/kernel/ace5-port/apply.sh') == ''
+        run: |
+          echo "::notice::Overlay build skipped; copy port/ to tools/kernel/ace5-port/ to enable it."
+
+      - name: Upload overlay build log
+        if: always() && hashFiles('overlay-build.log') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sm8650-overlay-feature-off-${{ github.run_number }}
+          path: |
+            overlay-build.log
+            overlays/
           if-no-files-found: warn
           retention-days: 14
