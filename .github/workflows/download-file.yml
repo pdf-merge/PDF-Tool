@@ -1,10 +1,11 @@
-name: DL OTA FILE
+name: Download One File
+run-name: "Download one file to ${{ inputs.GDRIVE_REMOTE || inputs.UPLOAD_REMOTE || 'gdrive3' }}:${{ inputs.GDRIVE_PATH || inputs.UPLOAD_PATH || 'Mirror' }}"
 
 on:
   workflow_dispatch:
     inputs:
       DOWNLOAD_URL:
-        description: 'Direct download link'
+        description: 'Direct ZIP download link (one file only)'
         required: true
         type: string
       TEMP_FILE_NAME:
@@ -36,12 +37,26 @@ on:
         required: false
         type: string
         default: ''
+      EXPECTED_BYTES:
+        description: 'Expected file size in bytes (optional)'
+        required: false
+        type: string
+        default: ''
+      EXPECTED_SHA256:
+        description: 'Expected SHA-256 checksum (optional)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
 
 env:
   TZ: Asia/Ho_Chi_Minh
 
 jobs:
   download-and-upload:
+    name: Download and upload one file
     runs-on: ubuntu-latest
     timeout-minutes: 720
 
@@ -51,6 +66,27 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Validate Download Inputs
+        env:
+          DOWNLOAD_URL: ${{ inputs.DOWNLOAD_URL }}
+          EXPECTED_BYTES: ${{ inputs.EXPECTED_BYTES }}
+          EXPECTED_SHA256: ${{ inputs.EXPECTED_SHA256 }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$DOWNLOAD_URL"
+          if ! [[ "$DOWNLOAD_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::Enter exactly one HTTP(S) download URL"
+            exit 1
+          fi
+          if [ -n "$EXPECTED_BYTES" ] && ! [[ "$EXPECTED_BYTES" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::EXPECTED_BYTES must be a positive whole number"
+            exit 1
+          fi
+          if [ -n "$EXPECTED_SHA256" ] && ! [[ "$EXPECTED_SHA256" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "::error::EXPECTED_SHA256 must contain exactly 64 hexadecimal characters"
+            exit 1
+          fi
 
       - name: Install Tools
         run: |
@@ -124,6 +160,7 @@ jobs:
           fi
 
           echo "::add-mask::$REMOTE_DIR"
+          rclone mkdir "$REMOTE_DIR"
           echo "remote=$UPLOAD_REMOTE" >> "$GITHUB_OUTPUT"
           echo "path=$UPLOAD_PATH" >> "$GITHUB_OUTPUT"
           echo "remote_dir=$REMOTE_DIR" >> "$GITHUB_OUTPUT"
@@ -162,6 +199,8 @@ jobs:
             --summary-interval=10 \
             --auto-file-renaming=false \
             --content-disposition-default-utf8=true \
+            --follow-metalink=false \
+            --follow-torrent=false \
             --dir="$DOWNLOAD_DIR" \
             "$DOWNLOAD_URL"
 
@@ -211,6 +250,30 @@ jobs:
           echo "final_name=$FINAL_NAME" >> "$GITHUB_OUTPUT"
           ls -lh -- "./$FINAL_NAME"
 
+      - name: Verify File Size and SHA-256
+        id: verify
+        env:
+          FINAL_NAME: ${{ steps.parse.outputs.final_name }}
+          EXPECTED_BYTES: ${{ inputs.EXPECTED_BYTES }}
+          EXPECTED_SHA256: ${{ inputs.EXPECTED_SHA256 }}
+        run: |
+          set -euo pipefail
+          ACTUAL_BYTES="$(stat -c '%s' -- "./$FINAL_NAME")"
+          if [ -n "$EXPECTED_BYTES" ] && [ "$ACTUAL_BYTES" != "$EXPECTED_BYTES" ]; then
+            echo "::error::Size mismatch: expected $EXPECTED_BYTES, got $ACTUAL_BYTES"
+            exit 1
+          fi
+          ACTUAL_SHA256="$(sha256sum < "./$FINAL_NAME")"
+          ACTUAL_SHA256="${ACTUAL_SHA256:0:64}"
+          if [ -n "$EXPECTED_SHA256" ] && [ "$ACTUAL_SHA256" != "${EXPECTED_SHA256,,}" ]; then
+            echo "::error::SHA-256 checksum does not match"
+            exit 1
+          fi
+          echo "actual_bytes=$ACTUAL_BYTES" >> "$GITHUB_OUTPUT"
+          echo "sha256=$ACTUAL_SHA256" >> "$GITHUB_OUTPUT"
+          echo "File size: $ACTUAL_BYTES bytes"
+          echo "SHA-256: $ACTUAL_SHA256"
+
       - name: Send Initial Telegram Message
         id: send_initial
         uses: appleboy/telegram-action@master
@@ -222,11 +285,13 @@ jobs:
             `${{ steps.parse.outputs.final_name }}`
           format: markdown
 
-      - name: Upload and Update Message
+      - name: Upload and Verify File
         id: upload
         env:
           FINAL_NAME: ${{ steps.parse.outputs.final_name }}
           REMOTE_DIR: ${{ steps.destination.outputs.remote_dir }}
+          ACTUAL_BYTES: ${{ steps.verify.outputs.actual_bytes }}
+          ACTUAL_SHA256: ${{ steps.verify.outputs.sha256 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MESSAGE_ID: ${{ steps.send_initial.outputs.message_id }}
@@ -260,8 +325,8 @@ jobs:
               ;;
             *)
               RCLONE_ARGS+=(
-                --transfers=4
-                --checkers=8
+                --transfers=1
+                --checkers=4
                 --multi-thread-streams=16
                 --multi-thread-cutoff=32M
                 --buffer-size=64M
@@ -270,14 +335,19 @@ jobs:
               ;;
           esac
 
-          rclone copyto "$FINAL_NAME" "${REMOTE_DIR}/${FINAL_NAME}" \
+          rclone copyto "./$FINAL_NAME" "${REMOTE_DIR}/${FINAL_NAME}" \
             "${RCLONE_ARGS[@]}"
 
-          FILE_COUNT="$(rclone lsf "$REMOTE_DIR" --files-only --include "$FINAL_NAME" 2>/dev/null | wc -l || echo 0)"
-          if [ "$FILE_COUNT" -lt 1 ]; then
-            echo "::error::Upload verification failed for ${REMOTE_DIR}/${FINAL_NAME}"
-            exit 1
-          fi
+          rclone lsjson "${REMOTE_DIR}/${FINAL_NAME}" --stat > uploaded-file.json
+          jq -e --arg name "$FINAL_NAME" --argjson size "$ACTUAL_BYTES" \
+            '.Name == $name and .Size == $size' uploaded-file.json
+
+          {
+            printf '### Uploaded: %s\n\n' "$FINAL_NAME"
+            printf 'Destination: `%s/%s`\n\n' "$REMOTE_DIR" "$FINAL_NAME"
+            printf 'Size: %s bytes\n\n' "$ACTUAL_BYTES"
+            printf 'SHA-256: `%s`\n' "$ACTUAL_SHA256"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Send Success Notification
         if: success()
