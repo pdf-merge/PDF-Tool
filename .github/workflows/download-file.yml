@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       TEMP_FILE_NAME:
-        description: 'Final file name, or download.zip to parse OTA metadata'
+        description: 'Final file name, or download.zip for OTA metadata with original filename fallback'
         required: true
         type: string
         default: 'download.zip'
@@ -138,7 +138,7 @@ jobs:
           set -euo pipefail
           echo "::add-mask::$DOWNLOAD_URL"
 
-          REQUESTED_NAME="$(basename "${TEMP_FILE_NAME:-download.zip}")"
+          REQUESTED_NAME="$(basename -- "${TEMP_FILE_NAME:-download.zip}")"
           if [ -z "$REQUESTED_NAME" ] || [ "$REQUESTED_NAME" = "." ] || [ "$REQUESTED_NAME" = "/" ]; then
             REQUESTED_NAME="download.zip"
           fi
@@ -147,7 +147,10 @@ jobs:
             *) REQUESTED_NAME="${REQUESTED_NAME}.zip" ;;
           esac
 
-          DOWNLOAD_NAME="download.zip"
+          # Let aria2 use the server's Content-Disposition filename or URL name.
+          # A separate directory keeps it intact without colliding with repo files.
+          DOWNLOAD_DIR="$(mktemp -d "$PWD/.ota-download.XXXXXX")"
+          trap 'rmdir "$DOWNLOAD_DIR" 2>/dev/null || true' EXIT
           echo "Starting accelerated download"
           aria2c \
             --max-connection-per-server=16 \
@@ -157,8 +160,18 @@ jobs:
             --retry-wait=10 \
             --file-allocation=none \
             --summary-interval=10 \
-            -o "$DOWNLOAD_NAME" \
+            --auto-file-renaming=false \
+            --content-disposition-default-utf8=true \
+            --dir="$DOWNLOAD_DIR" \
             "$DOWNLOAD_URL"
+
+          mapfile -d '' DOWNLOADED_FILES < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name '*.aria2' -print0)
+          if [ "${#DOWNLOADED_FILES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one downloaded file"
+            exit 1
+          fi
+          DOWNLOAD_NAME="${DOWNLOADED_FILES[0]}"
+          ORIGINAL_NAME="$(basename -- "$DOWNLOAD_NAME")"
 
           if [ ! -s "$DOWNLOAD_NAME" ]; then
             echo "::error::Downloaded file is missing or empty"
@@ -172,40 +185,31 @@ jobs:
 
           if [ "$REQUESTED_NAME" != "download.zip" ]; then
             FINAL_NAME="$REQUESTED_NAME"
-            mv "$DOWNLOAD_NAME" "$FINAL_NAME"
             echo "Using requested final name"
           else
             FINAL_NAME=""
             if unzip -l "$DOWNLOAD_NAME" META-INF/com/android/metadata >/dev/null 2>&1; then
               METADATA_VERSION="$(unzip -p "$DOWNLOAD_NAME" META-INF/com/android/metadata 2>/dev/null | sed -n 's/^version_name_show=\(.*\)$/\1/p' | head -n1)"
-              if [ -n "$METADATA_VERSION" ]; then
+              if [[ "$METADATA_VERSION" =~ [^[:space:]] ]]; then
                 SAFE_VERSION="$(printf '%s' "$METADATA_VERSION" | tr -d '\r' | sed 's/[\/:*?"<>|()]/_/g; s/__*/_/g; s/_$//')"
-                FINAL_NAME="${SAFE_VERSION}.zip"
+                if [ -n "$SAFE_VERSION" ]; then
+                  FINAL_NAME="${SAFE_VERSION}.zip"
+                fi
               fi
             fi
-
-            if [ -z "$FINAL_NAME" ]; then
-              URL_NAME="$(basename "${DOWNLOAD_URL%%\?*}")"
-              case "$URL_NAME" in
-                ""|downloadCheck|download|.) URL_NAME="download.zip" ;;
-              esac
-              case "$URL_NAME" in
-                *.zip) FINAL_NAME="$URL_NAME" ;;
-                *) FINAL_NAME="${URL_NAME}.zip" ;;
-              esac
-            fi
-
-            mv "$DOWNLOAD_NAME" "$FINAL_NAME"
           fi
 
-          SAFE_FINAL_NAME="$(printf '%s' "$FINAL_NAME" | sed 's/[\/:*?"<>|()]/_/g; s/__*/_/g; s/_\\.zip$/.zip/')"
-          if [ "$SAFE_FINAL_NAME" != "$FINAL_NAME" ]; then
-            mv "$FINAL_NAME" "$SAFE_FINAL_NAME"
-            FINAL_NAME="$SAFE_FINAL_NAME"
+          if [ -z "$FINAL_NAME" ]; then
+            # Keep the original filename exactly, including its extension.
+            FINAL_NAME="$ORIGINAL_NAME"
+            echo "No OTA name found; keeping original filename"
+          else
+            FINAL_NAME="$(printf '%s' "$FINAL_NAME" | sed 's/[\/:*?"<>|()]/_/g; s/__*/_/g; s/_\\.zip$/.zip/')"
           fi
+          mv -- "$DOWNLOAD_NAME" "./$FINAL_NAME"
 
           echo "final_name=$FINAL_NAME" >> "$GITHUB_OUTPUT"
-          ls -lh "$FINAL_NAME"
+          ls -lh -- "./$FINAL_NAME"
 
       - name: Send Initial Telegram Message
         id: send_initial
