@@ -23,6 +23,8 @@ jobs:
       OPAIRSHARE_SM8650_BUILD_ROOT: /mnt/opairshare-sm8650
       OPAIRSHARE_SM8650_SOURCE_BRANCH: oneplus/sm8650_b_16.0.0_ace_5
       KLEAF_MAKE_JOBS: 2
+      PKG110_STOCK_WLAN_VERMAGIC: 6.1.157-android14-11-o-g5c845492d444 SMP preempt mod_unload modversions aarch64
+      PKG110_STOCK_WLAN_SHA256: 5a38444ca2bbcaddc2cdcef22e735213077c4c41138a65e6a27d67eb503b5576
 
     steps:
       - name: Maximize Build Space
@@ -77,11 +79,25 @@ jobs:
             strings "$WLAN" | grep -E '^(name|vermagic|depends|srcversion)=' \
               | tee "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt"
           fi
-          grep -Eq 'vermagic[=:][[:space:]]*6\.1\.141-android14-11-o' \
-            "$GITHUB_WORKSPACE/artifacts/wlan-modinfo.txt" || {
-              echo "::error::unexpected WLAN vermagic"
-              exit 1
-            }
+          ACTUAL_VERMAGIC="$(modinfo -F vermagic "$WLAN" 2>/dev/null || true)"
+          if [ -z "$ACTUAL_VERMAGIC" ]; then
+            ACTUAL_VERMAGIC="$(strings "$WLAN" | sed -n 's/^vermagic=//p' | head -n 1)"
+          fi
+          {
+            echo "device=PKG110"
+            echo "firmware=PKG110_17.0.0.105(CN01)"
+            echo "stock_module=qca_cld3_kiwi_v2.ko"
+            echo "stock_sha256=$PKG110_STOCK_WLAN_SHA256"
+            echo "expected_vermagic=$PKG110_STOCK_WLAN_VERMAGIC"
+            echo "actual_vermagic=$ACTUAL_VERMAGIC"
+          } | tee "$GITHUB_WORKSPACE/artifacts/pkg110-abi-report.txt"
+          if [ "$ACTUAL_VERMAGIC" = "$PKG110_STOCK_WLAN_VERMAGIC" ]; then
+            touch "$GITHUB_WORKSPACE/artifacts/pkg110-abi-compatible"
+            echo "::notice::WLAN vermagic matches PKG110 stock"
+          else
+            touch "$GITHUB_WORKSPACE/artifacts/pkg110-abi-mismatch"
+            echo "::warning::WLAN vermagic does not match PKG110 stock; artifact is audit-only and must not be flashed"
+          fi
           sha256sum "$WLAN" > "$GITHUB_WORKSPACE/artifacts/wlan-sha256.txt"
 
       - name: Package kernel distribution
@@ -151,3 +167,12 @@ jobs:
             overlays/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Enforce PKG110 stock WLAN ABI
+        if: always()
+        shell: bash
+        run: |
+          test -f "$GITHUB_WORKSPACE/artifacts/pkg110-abi-compatible" || {
+            echo "::error::Built WLAN ABI does not match PKG110_17.0.0.105(CN01). Download the audit artifact, but do not flash it."
+            exit 1
+          }
