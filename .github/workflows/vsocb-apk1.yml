@@ -1,0 +1,123 @@
+name: Build VSOCB APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Chọn nhánh VSOCB để build'
+        required: true
+        type: choice
+        default: 'BRICK'
+        options:
+          - BRICK
+          - BHLNK
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout VSOCB (${{ inputs.branch }})
+        uses: actions/checkout@v4
+        with:
+          repository: buihien224/VSOCB
+          ref: ${{ inputs.branch }}
+          token: ${{ secrets.ACTION_TOKEN }}
+          path: VSOCB
+
+      - name: Get VSOCB commit hash
+        working-directory: VSOCB
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "VSOCB_COMMIT=$SHORT_SHA" >> "$GITHUB_ENV"
+          echo "Building branch ${{ inputs.branch }} at commit $SHORT_SHA"
+
+      - name: Cache Shizuku-Next checkout
+        id: shizuku-cache
+        uses: actions/cache@v4
+        with:
+          path: integrated
+          key: shizuku-next-${{ runner.os }}-6e350d79641fb7f1a838832e8c0db8e4331e7090
+
+      - name: Checkout Shizuku-Next
+        if: steps.shizuku-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: rushiranpise/Shizuku-Next
+          ref: 6e350d79641fb7f1a838832e8c0db8e4331e7090
+          submodules: recursive
+          path: integrated
+
+      - name: Reset cached Shizuku-Next source
+        working-directory: integrated
+        run: |
+          git checkout -- .
+          git submodule foreach --recursive git checkout -- . || true
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;37.0.0' 'ndk;29.0.14206865' 'cmake;3.31.6'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare combined app
+        env:
+          VSOCB_VERSION_CODE: ${{ github.run_number }}
+          VSOCB_SIGN: '1'
+        run: python3 VSOCB/scripts/prepare-integrated.py integrated
+
+      - name: Configure VSTeam signing
+        run: |
+          cat > integrated/signing.properties <<EOF
+          KEYSTORE_FILE=$GITHUB_WORKSPACE/VSOCB/scripts/vstools.jks
+          KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS=${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_ALIAS_PASSWORD=${{ secrets.KEYSTORE_ALIAS_PASSWORD }}
+          EOF
+
+      - name: Build integrated Shizuku release APK
+        working-directory: integrated
+        run: bash gradlew :manager:assembleRelease --stacktrace
+
+      - name: Collect and verify APK
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/37.0.0"
+          OUT="$RUNNER_TEMP/vsocb-build"
+          mkdir -p "$OUT"
+          cp integrated/manager/build/outputs/apk/release/*.apk "$OUT/VSOCB-raw.apk"
+          VER="$("$BT/aapt" dump badging "$OUT/VSOCB-raw.apk" |
+            sed -n "s/^package: .*versionName='\([^']*\)'.*/\1/p")"
+          FINAL_NAME="VSOCB-${VER}-${{ inputs.branch }}-${VSOCB_COMMIT}-r${{ github.run_number }}-release"
+          echo "VSOCB_VERSION_NAME=$VER" >> "$GITHUB_ENV"
+          echo "VSOCB_FINAL_NAME=$FINAL_NAME" >> "$GITHUB_ENV"
+          cp "$OUT/VSOCB-raw.apk" "$OUT/${FINAL_NAME}.apk"
+
+      - name: Send APK to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          APK_FILE="$RUNNER_TEMP/vsocb-build/${VSOCB_FINAL_NAME}.apk"
+          ZIP_FILE="$RUNNER_TEMP/vsocb-build/${VSOCB_FINAL_NAME}.zip"
+          zip -9 -q -j "$ZIP_FILE" "$APK_FILE"
+          curl --fail --silent --show-error --http1.1 --max-time 600 \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "document=@${ZIP_FILE}" \
+            -F "caption=Build xong: ${VSOCB_FINAL_NAME}" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"
