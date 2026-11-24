@@ -70,6 +70,7 @@
           - name: Prepare combined app
             working-directory: VSOCB
             env:
+              VSOCB_VERSION_NAME: '3.6'
               VSOCB_VERSION_CODE: ${{ github.run_number }}
               VSOCB_SIGN: '1'
             run: python3 VSOCB/scripts/prepare-integrated.py integrated
@@ -103,17 +104,22 @@
               cp "$OUT/VSOCB-raw.apk" "$OUT/${FINAL_NAME}.apk"
 
           - name: Send APK to Telegram
+            continue-on-error: true
             env:
               TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
               TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
             run: |
               set -uo pipefail
+              if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+                echo "Telegram secrets are not configured; skipping upload."
+                exit 0
+              fi
               APK_FILE="$RUNNER_TEMP/vsocb-build/${VSOCB_FINAL_NAME}.apk"
               ZIP_FILE="$RUNNER_TEMP/vsocb-build/${VSOCB_FINAL_NAME}.zip"
               zip -9 -q -j "$ZIP_FILE" "$APK_FILE"
               curl --fail --silent --show-error --http1.1 --max-time 600 \
                 -H "Expect:" \
                 -F "chat_id=${TELEGRAM_CHAT_ID}" \
-                -F "document=@${ZIP_FILE}" \
+                -F "document=@${ZIP_FILE};filename=${VSOCB_FINAL_NAME}.zip" \
                 -F "caption=Build xong: ${VSOCB_FINAL_NAME}" \
                 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"
