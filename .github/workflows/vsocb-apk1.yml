@@ -35,7 +35,6 @@
               echo "VSOCB_COMMIT=$SHORT_SHA" >> "$GITHUB_ENV"
               echo "Building branch ${{ inputs.branch }} at commit $SHORT_SHA"
 
-          # Nhánh BRICK đã có sẵn integrated/ trong repo; nếu build nhánh cũ chưa có thì clone fallback
           - name: Ensure integrated framework is present
             working-directory: VSOCB
             run: |
@@ -70,19 +69,22 @@
           - name: Prepare combined app
             working-directory: VSOCB
             env:
-              VSOCB_VERSION_NAME: '3.6'
               VSOCB_VERSION_CODE: ${{ github.run_number }}
               VSOCB_SIGN: '1'
             run: python3 VSOCB/scripts/prepare-integrated.py integrated
 
           - name: Configure VSTeam signing
             working-directory: VSOCB
+            env:
+              KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+              KS_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+              KS_ALIAS_PASS: ${{ secrets.KEYSTORE_ALIAS_PASSWORD }}
             run: |
               cat > integrated/signing.properties <<EOF
               KEYSTORE_FILE=$GITHUB_WORKSPACE/VSOCB/VSOCB/scripts/vstools.jks
-              KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD || 'linkcute' }}
-              KEYSTORE_ALIAS=${{ secrets.KEYSTORE_ALIAS || 'vsteam' }}
-              KEYSTORE_ALIAS_PASSWORD=${{ secrets.KEYSTORE_ALIAS_PASSWORD || 'linkcute' }}
+              KEYSTORE_PASSWORD=${KS_PASS:-linkcute}
+              KEYSTORE_ALIAS=${KS_ALIAS:-vsteam}
+              KEYSTORE_ALIAS_PASSWORD=${KS_ALIAS_PASS:-linkcute}
               EOF
 
           - name: Build integrated VSOCB release APK
@@ -104,14 +106,13 @@
               cp "$OUT/VSOCB-raw.apk" "$OUT/${FINAL_NAME}.apk"
 
           - name: Send APK to Telegram
-            continue-on-error: true
             env:
               TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
               TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
             run: |
               set -uo pipefail
               if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-                echo "Telegram secrets are not configured; skipping upload."
+                echo "Telegram secrets missing; skipping."
                 exit 0
               fi
               APK_FILE="$RUNNER_TEMP/vsocb-build/${VSOCB_FINAL_NAME}.apk"
@@ -120,6 +121,6 @@
               curl --fail --silent --show-error --http1.1 --max-time 600 \
                 -H "Expect:" \
                 -F "chat_id=${TELEGRAM_CHAT_ID}" \
-                -F "document=@${ZIP_FILE};filename=${VSOCB_FINAL_NAME}.zip" \
+                -F "document=@${ZIP_FILE}" \
                 -F "caption=Build xong: ${VSOCB_FINAL_NAME}" \
                 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"
